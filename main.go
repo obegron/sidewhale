@@ -565,6 +565,9 @@ func buildContainerCommand(rootfs, tmpBind, workingDir, userSpec string, extraBi
 	if len(cmdArgs) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
+	if err := ensureSyntheticUserIdentity(rootfs, userSpec); err != nil {
+		return nil, err
+	}
 	prootPath, err := findProotPath()
 	if err != nil {
 		return nil, err
@@ -2973,6 +2976,76 @@ func resolveProotIdentity(rootfs, userSpec string) (string, bool) {
 	return uid + ":" + gid, true
 }
 
+func ensureSyntheticUserIdentity(rootfs, userSpec string) error {
+	spec := strings.TrimSpace(userSpec)
+	if spec == "" {
+		return nil
+	}
+	userPart := spec
+	groupPart := ""
+	if i := strings.Index(spec, ":"); i >= 0 {
+		userPart = spec[:i]
+		groupPart = spec[i+1:]
+	}
+	userPart = strings.TrimSpace(userPart)
+	groupPart = strings.TrimSpace(groupPart)
+	if !isDigits(userPart) {
+		return nil
+	}
+
+	uid := userPart
+	gid := uid
+	if groupPart != "" {
+		if isDigits(groupPart) {
+			gid = groupPart
+		} else if resolved, ok := lookupGroupByName(rootfs, groupPart); ok {
+			gid = resolved
+		}
+	} else if resolved, ok := lookupGIDForUID(rootfs, uid); ok {
+		gid = resolved
+	}
+
+	if _, found := lookupGIDForUID(rootfs, uid); !found {
+		passwdLine := fmt.Sprintf("sidewhale-%s:x:%s:%s:sidewhale synthetic user:/tmp:/sbin/nologin", uid, uid, gid)
+		if err := appendUniqueLine(filepath.Join(rootfs, "etc", "passwd"), passwdLine); err != nil {
+			return fmt.Errorf("passwd synthetic user setup failed: %w", err)
+		}
+	}
+	if !groupExistsByGID(rootfs, gid) {
+		groupLine := fmt.Sprintf("sidewhale-%s:x:%s:", gid, gid)
+		if err := appendUniqueLine(filepath.Join(rootfs, "etc", "group"), groupLine); err != nil {
+			return fmt.Errorf("group synthetic user setup failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func appendUniqueLine(filePath, line string) error {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, existing := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(existing) == line {
+			return nil
+		}
+	}
+	content := strings.TrimRight(string(data), "\n")
+	if content == "" {
+		content = line + "\n"
+	} else {
+		content = content + "\n" + line + "\n"
+	}
+	return os.WriteFile(filePath, []byte(content), 0o644)
+}
+
 func resolveUserToken(rootfs, token string) (uid, gid string, ok bool) {
 	t := strings.TrimSpace(token)
 	if t == "" {
@@ -3083,6 +3156,27 @@ func lookupGroupByName(rootfs, name string) (string, bool) {
 		return fields[2], true
 	}
 	return "", false
+}
+
+func groupExistsByGID(rootfs, gid string) bool {
+	data, err := os.ReadFile(filepath.Join(rootfs, "etc", "group"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 3 {
+			continue
+		}
+		if fields[2] == gid {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultContainerHostname(id string) string {

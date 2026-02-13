@@ -530,6 +530,72 @@ func TestInsecurePullTransport(t *testing.T) {
 	}
 }
 
+func TestEnsureSyntheticUserIdentityNumericUID(t *testing.T) {
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc", "passwd"), []byte("root:x:0:0:root:/root:/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write passwd: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc", "group"), []byte("root:x:0:\n"), 0o644); err != nil {
+		t.Fatalf("write group: %v", err)
+	}
+
+	if err := ensureSyntheticUserIdentity(rootfs, "65532"); err != nil {
+		t.Fatalf("ensureSyntheticUserIdentity: %v", err)
+	}
+	passwdData, err := os.ReadFile(filepath.Join(rootfs, "etc", "passwd"))
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	if !strings.Contains(string(passwdData), ":65532:65532:") {
+		t.Fatalf("passwd missing synthetic uid/gid entry: %s", string(passwdData))
+	}
+	groupData, err := os.ReadFile(filepath.Join(rootfs, "etc", "group"))
+	if err != nil {
+		t.Fatalf("read group: %v", err)
+	}
+	if !strings.Contains(string(groupData), ":65532:") {
+		t.Fatalf("group missing synthetic gid entry: %s", string(groupData))
+	}
+}
+
+func TestEnsureSyntheticUserIdentityIdempotent(t *testing.T) {
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc", "passwd"), []byte("root:x:0:0:root:/root:/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write passwd: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc", "group"), []byte("root:x:0:\n"), 0o644); err != nil {
+		t.Fatalf("write group: %v", err)
+	}
+
+	if err := ensureSyntheticUserIdentity(rootfs, "65532:65532"); err != nil {
+		t.Fatalf("first ensureSyntheticUserIdentity: %v", err)
+	}
+	if err := ensureSyntheticUserIdentity(rootfs, "65532:65532"); err != nil {
+		t.Fatalf("second ensureSyntheticUserIdentity: %v", err)
+	}
+
+	passwdData, err := os.ReadFile(filepath.Join(rootfs, "etc", "passwd"))
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	if strings.Count(string(passwdData), "sidewhale-65532:x:65532:65532:") != 1 {
+		t.Fatalf("expected one synthetic passwd entry, got: %s", string(passwdData))
+	}
+	groupData, err := os.ReadFile(filepath.Join(rootfs, "etc", "group"))
+	if err != nil {
+		t.Fatalf("read group: %v", err)
+	}
+	if strings.Count(string(groupData), "sidewhale-65532:x:65532:") != 1 {
+		t.Fatalf("expected one synthetic group entry, got: %s", string(groupData))
+	}
+}
+
 func TestIsConfluentKafkaImage(t *testing.T) {
 	tests := []struct {
 		image string
