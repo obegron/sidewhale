@@ -1,4 +1,4 @@
-module goredock
+module sidewhale
 
 go 1.26
 

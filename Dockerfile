@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}'" -o /out/tcexecutor .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}'" -o /out/sidewhale .
 
 FROM debian:bookworm-slim AS proot-build
 ARG PROOT_VERSION=v5.4.0
@@ -29,9 +29,9 @@ RUN curl -fsSL "https://codeload.github.com/proot-me/proot/tar.gz/refs/tags/${PR
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libtalloc2 && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /tmp/tcexecutor && chown -R 65532:65532 /tmp/tcexecutor
-COPY --from=build /out/tcexecutor /tcexecutor
+RUN mkdir -p /tmp/sidewhale && chown -R 65532:65532 /tmp/sidewhale
+COPY --from=build /out/sidewhale /sidewhale
 COPY --from=proot-build /out/proot /usr/local/bin/proot
 USER 65532:65532
-EXPOSE 8080
-ENTRYPOINT ["/tcexecutor"]
+EXPOSE 23750
+ENTRYPOINT ["/sidewhale"]

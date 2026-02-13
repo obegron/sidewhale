@@ -163,7 +163,7 @@ const extractorVersion = "v2"
 func main() {
 	var (
 		listenAddr    = flag.String("listen", ":23750", "listen address")
-		stateDir      = flag.String("state-dir", "/tmp/tcexecutor", "state directory")
+		stateDir      = flag.String("state-dir", "/tmp/sidewhale", "state directory")
 		maxConcurrent = flag.Int("max-concurrent", 4, "max concurrent containers (0 = unlimited)")
 		maxRuntime    = flag.Duration("max-runtime", 30*time.Minute, "max runtime per container (0 = unlimited)")
 		maxLogBytes   = flag.Int64("max-log-bytes", 50*1024*1024, "max log size in bytes (0 = unlimited)")
@@ -234,14 +234,14 @@ func main() {
 		}
 		memTotal := readMemTotal()
 		info := map[string]interface{}{
-			"ID":              "tcexecutor",
+			"ID":              "sidewhale",
 			"OperatingSystem": "linux",
 			"OSType":          "linux",
 			"Architecture":    "amd64",
 			"ServerVersion":   version,
 			"MemTotal":        memTotal,
 			"NCPU":            runtime.NumCPU(),
-			"Name":            "tcexecutor",
+			"Name":            "sidewhale",
 			"Containers":      len(store.listContainers()),
 			"Images":          0,
 			"Driver":          "vfs",
@@ -255,10 +255,10 @@ func main() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		fmt.Fprintf(w, "tcexecutor_running_containers %d\n", m.running)
-		fmt.Fprintf(w, "tcexecutor_start_failures %d\n", m.startFailures)
-		fmt.Fprintf(w, "tcexecutor_pull_duration_ms %d\n", m.pullDurationMs)
-		fmt.Fprintf(w, "tcexecutor_execution_duration_ms %d\n", m.execDurationMs)
+		fmt.Fprintf(w, "sidewhale_running_containers %d\n", m.running)
+		fmt.Fprintf(w, "sidewhale_start_failures %d\n", m.startFailures)
+		fmt.Fprintf(w, "sidewhale_pull_duration_ms %d\n", m.pullDurationMs)
+		fmt.Fprintf(w, "sidewhale_execution_duration_ms %d\n", m.execDurationMs)
 	})
 
 	mux.HandleFunc("/images/create", func(w http.ResponseWriter, r *http.Request) {
@@ -435,7 +435,7 @@ func main() {
 		IdleTimeout: 5 * time.Minute,
 	}
 
-	fmt.Printf("tcexecutor listening on %s\n", *listenAddr)
+	fmt.Printf("sidewhale listening on %s\n", *listenAddr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
@@ -804,8 +804,8 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	cmd.Stderr = logFile
 
 	// Also log to server stdout
-	fmt.Printf("tcexecutor: starting container %s (id %s)\n", c.Name, c.ID)
-	fmt.Printf("tcexecutor: command: %s %s\n", cmd.Path, strings.Join(cmd.Args[1:], " "))
+	fmt.Printf("sidewhale: starting container %s (id %s)\n", c.Name, c.ID)
+	fmt.Printf("sidewhale: command: %s %s\n", cmd.Path, strings.Join(cmd.Args[1:], " "))
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -1371,7 +1371,7 @@ func resolvePathUnder(base string, rel string) (string, error) {
 }
 
 func extractArchiveToPath(r io.Reader, targetPath string, mapDst func(string) string) error {
-	tmpDir, err := os.MkdirTemp("", "tcexecutor-archive-*")
+	tmpDir, err := os.MkdirTemp("", "sidewhale-archive-*")
 	if err != nil {
 		return err
 	}
@@ -2487,7 +2487,7 @@ func proxyConn(src net.Conn, containerPort int) {
 	defer src.Close()
 	dst, err := dialContainerPort(containerPort)
 	if err != nil {
-		fmt.Printf("tcexecutor: proxy dial failed containerPort=%d err=%v\n", containerPort, err)
+		fmt.Printf("sidewhale: proxy dial failed containerPort=%d err=%v\n", containerPort, err)
 		return
 	}
 	defer dst.Close()
@@ -2498,19 +2498,19 @@ func proxyConn(src net.Conn, containerPort int) {
 	go func() {
 		c2sBytes, c2sSample, c2sErr = proxyCopy(dst, src)
 		if c2sErr != nil {
-			fmt.Printf("tcexecutor: proxy c->s copy error containerPort=%d bytes=%d err=%v\n", containerPort, c2sBytes, c2sErr)
+			fmt.Printf("sidewhale: proxy c->s copy error containerPort=%d bytes=%d err=%v\n", containerPort, c2sBytes, c2sErr)
 		}
 		_ = closeWrite(dst)
 		close(done)
 	}()
 	s2cBytes, s2cSample, s2cErr := proxyCopy(src, dst)
 	if s2cErr != nil {
-		fmt.Printf("tcexecutor: proxy s->c copy error containerPort=%d bytes=%d err=%v\n", containerPort, s2cBytes, s2cErr)
+		fmt.Printf("sidewhale: proxy s->c copy error containerPort=%d bytes=%d err=%v\n", containerPort, s2cBytes, s2cErr)
 	}
 	_ = closeWrite(src)
 	<-done
 	if c2sErr != nil || s2cErr != nil {
-		fmt.Printf("tcexecutor: proxy closed containerPort=%d c2s=%d s2c=%d c2sErr=%v s2cErr=%v c2sSample=%s s2cSample=%s\n", containerPort, c2sBytes, s2cBytes, c2sErr, s2cErr, c2sSample, s2cSample)
+		fmt.Printf("sidewhale: proxy closed containerPort=%d c2s=%d s2c=%d c2sErr=%v s2cErr=%v c2sSample=%s s2cSample=%s\n", containerPort, c2sBytes, s2cBytes, c2sErr, s2cErr, c2sSample, s2cSample)
 	}
 }
 
@@ -2595,14 +2595,14 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 			return
 		}
 		if limits.maxRuntime > 0 && time.Now().After(deadline) {
-			fmt.Printf("tcexecutor: monitor killed container id=%s pid=%d reason=max_runtime limit=%s\n", id, pid, limits.maxRuntime)
+			fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_runtime limit=%s\n", id, pid, limits.maxRuntime)
 			_ = killProcessGroup(pid, syscall.SIGKILL)
 			store.markStopped(id)
 			return
 		}
 		if limits.maxLogBytes > 0 {
 			if info, err := os.Stat(logPath); err == nil && info.Size() > limits.maxLogBytes {
-				fmt.Printf("tcexecutor: monitor killed container id=%s pid=%d reason=max_log_bytes size=%d limit=%d\n", id, pid, info.Size(), limits.maxLogBytes)
+				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_log_bytes size=%d limit=%d\n", id, pid, info.Size(), limits.maxLogBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
 				store.markStopped(id)
 				return
@@ -2610,7 +2610,7 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 		}
 		if limits.maxMemBytes > 0 {
 			if rss, err := readRSS(pid); err == nil && rss > limits.maxMemBytes {
-				fmt.Printf("tcexecutor: monitor killed container id=%s pid=%d reason=max_mem_bytes rss=%d limit=%d\n", id, pid, rss, limits.maxMemBytes)
+				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_mem_bytes rss=%d limit=%d\n", id, pid, rss, limits.maxMemBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
 				store.markStopped(id)
 				return
@@ -2621,7 +2621,7 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 			scannedOffset = nextOffset
 			scannedCarry = nextCarry
 			if matched {
-				fmt.Printf("tcexecutor: monitor killed container id=%s pid=%d reason=fatal_log signature=%q\n", id, pid, sig)
+				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=fatal_log signature=%q\n", id, pid, sig)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
 				store.markStopped(id)
 				return

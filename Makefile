@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
-BINARY := tcexecutor
-IMAGE_NAME ?= tcexecutor
+BINARY := sidewhale
+IMAGE_NAME ?= sidewhale
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X 'main.version=$(VERSION)'
 
@@ -15,7 +15,7 @@ help:
 	@echo "  clean   Remove build artifacts"
 	@echo "Variables:"
 	@echo "  VERSION    Override version tag (default: git describe or dev)"
-	@echo "  IMAGE_NAME Override image name (default: tcexecutor)"
+	@echo "  IMAGE_NAME Override image name (default: sidewhale)"
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
