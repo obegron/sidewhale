@@ -1,7 +1,5 @@
 ![sidewhale logo](assets/sidewhale-logo.png)
 
-# sidewhale
-
 `sidewhale` is a small Docker API shim for running Testcontainers workloads without a Docker daemon.
 
 It is not a container runtime and does not try to be Docker-compatible beyond what Testcontainers needs.
