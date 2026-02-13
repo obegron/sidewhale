@@ -25,7 +25,11 @@ func handleImagesCreate(w http.ResponseWriter, r *http.Request, store *container
 		return
 	}
 	if tag != "" && !strings.Contains(ref, "@") && !imageRefHasTag(ref) {
-		ref = ref + ":" + tag
+		if imageTagLooksLikeDigest(tag) {
+			ref = ref + "@" + tag
+		} else {
+			ref = ref + ":" + tag
+		}
 	}
 	resolvedRef := rewriteImageReference(ref, cfg.mirrorRules)
 	if !isImageAllowed(resolvedRef, cfg.allowedPrefixes) {
@@ -65,4 +69,23 @@ func handleImagesCreate(w http.ResponseWriter, r *http.Request, store *container
 		writeStatus("Digest: " + meta.Digest)
 		writeStatus("Status: Downloaded newer image for " + resolvedRef)
 	}
+}
+
+func imageTagLooksLikeDigest(tag string) bool {
+	tag = strings.TrimSpace(strings.ToLower(tag))
+	algo, value, ok := strings.Cut(tag, ":")
+	if !ok || algo == "" || value == "" {
+		return false
+	}
+	for _, ch := range algo {
+		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '+' && ch != '-' && ch != '_' && ch != '.' {
+			return false
+		}
+	}
+	for _, ch := range value {
+		if (ch < 'a' || ch > 'f') && (ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
 }

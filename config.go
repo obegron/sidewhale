@@ -23,6 +23,7 @@ func initConfig() (appConfig, bool, error) {
 	maxRuntime := flag.Duration("max-runtime", 30*time.Minute, "max runtime per container (0 = unlimited)")
 	maxLogBytes := flag.Int64("max-log-bytes", 50*1024*1024, "max log size in bytes (0 = unlimited)")
 	maxMemBytes := flag.Int64("max-mem-bytes", 0, "soft memory limit in bytes (0 = unlimited)")
+	maxDiskBytes := flag.Int64("max-disk-bytes", 2*1024*1024*1024, "max disk usage per container in bytes (0 = unlimited)")
 	allowedImages := flag.String("allowed-images", "", "comma-separated allowed image prefixes")
 	policyFile := flag.String("image-policy-file", "", "YAML file with allowed image prefixes")
 	imageMirrors := flag.String("image-mirrors", "", "comma-separated image rewrite rules from=to")
@@ -56,6 +57,7 @@ func initConfig() (appConfig, bool, error) {
 			maxRuntime:    *maxRuntime,
 			maxLogBytes:   *maxLogBytes,
 			maxMemBytes:   *maxMemBytes,
+			maxDiskBytes:  *maxDiskBytes,
 		},
 	}
 	return cfg, false, nil

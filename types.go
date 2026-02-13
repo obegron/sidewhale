@@ -18,6 +18,8 @@ type Container struct {
 	Ports      map[int]int
 	Env        []string `json:"Env"`
 	LogPath    string   `json:"LogPath"`
+	StdoutPath string   `json:"StdoutPath,omitempty"`
+	StderrPath string   `json:"StderrPath,omitempty"`
 	Pid        int      `json:"Pid"`
 	Cmd        []string `json:"Cmd"`
 	WorkingDir string   `json:"WorkingDir"`
@@ -106,6 +108,7 @@ type runtimeLimits struct {
 	maxRuntime    time.Duration
 	maxLogBytes   int64
 	maxMemBytes   int64
+	maxDiskBytes  int64
 }
 
 type imagePolicyFile struct {

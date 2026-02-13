@@ -9,12 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
+
+var imagePullLocks sync.Map
 
 func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, trustInsecure bool) (string, imageMeta, error) {
 	ref = strings.TrimSpace(ref)
@@ -42,6 +45,9 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 	}
 
 	digestKey := strings.ReplaceAll(digest.String(), ":", "_")
+	lock := acquireImagePullLock(digestKey)
+	defer lock.Unlock()
+
 	imageDir := filepath.Join(stateDir, "images", digestKey)
 	rootfsDir := filepath.Join(imageDir, "rootfs")
 	metaPath := filepath.Join(imageDir, "image.json")
@@ -124,6 +130,13 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 		m.mu.Unlock()
 	}
 	return rootfsDir, meta, nil
+}
+
+func acquireImagePullLock(key string) *sync.Mutex {
+	lockAny, _ := imagePullLocks.LoadOrStore(key, &sync.Mutex{})
+	lock := lockAny.(*sync.Mutex)
+	lock.Lock()
+	return lock
 }
 
 func insecurePullTransport() http.RoundTripper {

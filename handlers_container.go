@@ -64,6 +64,8 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		return
 	}
 	logPath := filepath.Join(store.stateDir, "containers", id, "container.log")
+	stdoutPath := filepath.Join(store.stateDir, "containers", id, "stdout.log")
+	stderrPath := filepath.Join(store.stateDir, "containers", id, "stderr.log")
 	tmpPath := filepath.Join(store.stateDir, "containers", id, "tmp")
 	if err := os.MkdirAll(tmpPath, 0o777); err != nil {
 		writeError(w, http.StatusInternalServerError, "tmp allocation failed")
@@ -113,6 +115,8 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		Env:        env,
 		WorkingDir: workingDir,
 		LogPath:    logPath,
+		StdoutPath: stdoutPath,
+		StderrPath: stderrPath,
 		Cmd:        append(entrypoint, cmd...),
 	}
 
@@ -192,14 +196,54 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		writeError(w, http.StatusInternalServerError, "log open failed")
 		return
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	stdoutPath := c.StdoutPath
+	if strings.TrimSpace(stdoutPath) == "" {
+		stdoutPath = c.LogPath
+	}
+	stderrPath := c.StderrPath
+	if strings.TrimSpace(stderrPath) == "" {
+		stderrPath = c.LogPath
+	}
+	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		logFile.Close()
+		if reserved {
+			m.mu.Lock()
+			if m.running > 0 {
+				m.running--
+			}
+			m.mu.Unlock()
+		}
+		writeError(w, http.StatusInternalServerError, "log open failed")
+		return
+	}
+	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		stdoutFile.Close()
+		logFile.Close()
+		if reserved {
+			m.mu.Lock()
+			if m.running > 0 {
+				m.running--
+			}
+			m.mu.Unlock()
+		}
+		writeError(w, http.StatusInternalServerError, "log open failed")
+		return
+	}
+	closeLogs := func() {
+		_ = stderrFile.Close()
+		_ = stdoutFile.Close()
+		_ = logFile.Close()
+	}
+	cmd.Stdout = io.MultiWriter(logFile, stdoutFile)
+	cmd.Stderr = io.MultiWriter(logFile, stderrFile)
 
 	fmt.Printf("sidewhale: starting container %s (id %s)\n", c.Name, c.ID)
 	fmt.Printf("sidewhale: command: %s %s\n", cmd.Path, strings.Join(cmd.Args[1:], " "))
 
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
+		closeLogs()
 		m.mu.Lock()
 		m.startFailures++
 		if reserved && m.running > 0 {
@@ -213,7 +257,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	proxies, err := startPortProxies(c.Ports)
 	if err != nil {
 		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
-		logFile.Close()
+		closeLogs()
 		if reserved {
 			m.mu.Lock()
 			if m.running > 0 {
@@ -231,7 +275,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	if err := store.save(c); err != nil {
 		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		store.stopProxies(c.ID)
-		logFile.Close()
+		closeLogs()
 		if reserved {
 			m.mu.Lock()
 			if m.running > 0 {
@@ -247,7 +291,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 
 	go func() {
 		_ = cmd.Wait()
-		logFile.Close()
+		closeLogs()
 		store.stopProxies(c.ID)
 		store.markStopped(c.ID)
 		m.mu.Lock()
@@ -310,6 +354,8 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 
 	_ = os.RemoveAll(filepath.Dir(c.Rootfs))
 	_ = os.Remove(c.LogPath)
+	_ = os.Remove(c.StdoutPath)
+	_ = os.Remove(c.StderrPath)
 	_ = os.Remove(store.containerPath(c.ID))
 
 	store.mu.Lock()
@@ -404,17 +450,49 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		return
 	}
 	follow := parseDockerBool(r.URL.Query().Get("follow"), false)
-	stream := byte(1)
-	if !includeStdout && includeStderr {
-		stream = 2
+	type logStream struct {
+		stream byte
+		file   *os.File
+		offset int64
 	}
-
-	logFile, err := os.Open(c.LogPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "log read failed")
-		return
+	streams := make([]*logStream, 0, 2)
+	addStream := func(path string, stream byte) error {
+		logFile, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		streams = append(streams, &logStream{stream: stream, file: logFile})
+		return nil
 	}
-	defer logFile.Close()
+	logPath := c.LogPath
+	stdoutPath := c.StdoutPath
+	if strings.TrimSpace(stdoutPath) == "" {
+		stdoutPath = logPath
+	}
+	stderrPath := c.StderrPath
+	if strings.TrimSpace(stderrPath) == "" {
+		stderrPath = logPath
+	}
+	if includeStdout {
+		if err := addStream(stdoutPath, 1); err != nil {
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+	}
+	if includeStderr {
+		if stdoutPath == stderrPath && includeStdout {
+			// Backward-compat for legacy containers with a single merged logfile.
+		} else if err := addStream(stderrPath, 2); err != nil {
+			for _, s := range streams {
+				_ = s.file.Close()
+			}
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+	}
+	for _, s := range streams {
+		defer s.file.Close()
+	}
 
 	w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 	w.WriteHeader(http.StatusOK)
@@ -424,26 +502,27 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			flusher.Flush()
 		}
 	}
-	offset := int64(0)
 	writeNew := func() error {
-		stat, err := logFile.Stat()
-		if err != nil {
-			return err
+		for _, s := range streams {
+			stat, err := s.file.Stat()
+			if err != nil {
+				return err
+			}
+			size := stat.Size()
+			if size <= s.offset {
+				continue
+			}
+			chunk := make([]byte, size-s.offset)
+			n, err := s.file.ReadAt(chunk, s.offset)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return err
+			}
+			s.offset += int64(n)
+			if n == 0 {
+				continue
+			}
+			_, _ = w.Write(frameDockerRawStream(s.stream, chunk[:n]))
 		}
-		size := stat.Size()
-		if size <= offset {
-			return nil
-		}
-		chunk := make([]byte, size-offset)
-		n, err := logFile.ReadAt(chunk, offset)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		offset += int64(n)
-		if n == 0 {
-			return nil
-		}
-		_, _ = w.Write(frameDockerRawStream(stream, chunk[:n]))
 		flush()
 		return nil
 	}

@@ -60,6 +60,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 	mux.HandleFunc("/images/create", func(w http.ResponseWriter, r *http.Request) {
 		handleImagesCreate(w, r, store, m, cfg, ensureImage)
 	})
+	mux.HandleFunc("/images/prune", handleImagesPrune)
 	mux.HandleFunc("/images/json", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusNotFound, "not found")
@@ -79,9 +80,15 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 		}
 		handleEvents(w, r)
 	})
+	mux.HandleFunc("/networks/prune", handleNetworksPrune)
+	mux.HandleFunc("/volumes/prune", handleVolumesPrune)
 
 	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/containers/")
+		if path == "prune" {
+			handleContainersPrune(w, r)
+			return
+		}
 		if path == "create" && r.Method == http.MethodPost {
 			handleCreate(w, r, store, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure)
 			return

@@ -68,3 +68,41 @@ func TestHandleImagesCreateStreamsError(t *testing.T) {
 		t.Fatalf("missing errorDetail line: %s", body)
 	}
 }
+
+func TestHandleImagesCreateDigestTagUsesAtSeparator(t *testing.T) {
+	store := &containerStore{stateDir: t.TempDir()}
+	cfg := appConfig{}
+	ensure := func(_ context.Context, ref string, _ string, _ *metrics, _ bool) (string, imageMeta, error) {
+		if ref != "alpine@sha256:1775bebec23e1f3ce486989bfc9ff3c4e951690df84aa9f926497d82f2ffca9d" {
+			t.Fatalf("ensure ref = %q", ref)
+		}
+		return "/tmp/rootfs", imageMeta{Digest: "sha256:abc"}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/images/create?fromImage=alpine&tag=sha256:1775bebec23e1f3ce486989bfc9ff3c4e951690df84aa9f926497d82f2ffca9d", nil)
+	rec := httptest.NewRecorder()
+	handleImagesCreate(rec, req, store, &metrics{}, cfg, ensure)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestImageTagLooksLikeDigest(t *testing.T) {
+	tests := []struct {
+		tag  string
+		want bool
+	}{
+		{tag: "sha256:abcd0123", want: true},
+		{tag: "SHA256:abcd0123", want: true},
+		{tag: "latest", want: false},
+		{tag: "v1.2.3", want: false},
+		{tag: "sha256:not-hex", want: false},
+		{tag: "", want: false},
+	}
+	for _, tt := range tests {
+		if got := imageTagLooksLikeDigest(tt.tag); got != tt.want {
+			t.Fatalf("imageTagLooksLikeDigest(%q) = %v, want %v", tt.tag, got, tt.want)
+		}
+	}
+}

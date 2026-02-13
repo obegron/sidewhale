@@ -63,3 +63,42 @@ func TestTopEndpointReturnsProcessShape(t *testing.T) {
 		t.Fatalf("top payload missing Processes: %s", rec.Body.String())
 	}
 }
+
+func TestPruneEndpointsReturnDockerShape(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{},
+		execs:      map[string]*ExecInstance{},
+		proxies:    map[string][]*portProxy{},
+		stateDir:   t.TempDir(),
+	}
+	cfg := appConfig{stateDir: store.stateDir}
+	handler := timeoutMiddleware(apiVersionMiddleware(newRouter(store, &metrics{}, cfg, &probeState{})))
+
+	tests := []struct {
+		path         string
+		expectedKeys []string
+	}{
+		{path: "/containers/prune", expectedKeys: []string{"ContainersDeleted", "SpaceReclaimed"}},
+		{path: "/images/prune", expectedKeys: []string{"ImagesDeleted", "SpaceReclaimed"}},
+		{path: "/networks/prune", expectedKeys: []string{"NetworksDeleted"}},
+		{path: "/volumes/prune", expectedKeys: []string{"VolumesDeleted", "SpaceReclaimed"}},
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status = %d, want %d", tt.path, rec.Code, http.StatusOK)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("POST %s invalid json: %v", tt.path, err)
+		}
+		for _, key := range tt.expectedKeys {
+			if _, ok := payload[key]; !ok {
+				t.Fatalf("POST %s payload missing key %q: %s", tt.path, key, rec.Body.String())
+			}
+		}
+	}
+}

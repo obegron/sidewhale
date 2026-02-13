@@ -17,7 +17,11 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 	}
 	c, ok := store.get(id)
 	checkOracleFatal := ok && isOracleImage(c.Image)
-	if limits.maxRuntime <= 0 && limits.maxLogBytes <= 0 && limits.maxMemBytes <= 0 && !checkOracleFatal {
+	containerDir := ""
+	if ok {
+		containerDir = filepath.Dir(c.Rootfs)
+	}
+	if limits.maxRuntime <= 0 && limits.maxLogBytes <= 0 && limits.maxMemBytes <= 0 && limits.maxDiskBytes <= 0 && !checkOracleFatal {
 		return
 	}
 	deadline := time.Now().Add(limits.maxRuntime)
@@ -46,6 +50,14 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 		if limits.maxMemBytes > 0 {
 			if rss, err := readRSS(pid); err == nil && rss > limits.maxMemBytes {
 				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_mem_bytes rss=%d limit=%d\n", id, pid, rss, limits.maxMemBytes)
+				_ = killProcessGroup(pid, syscall.SIGKILL)
+				store.markStopped(id)
+				return
+			}
+		}
+		if limits.maxDiskBytes > 0 && containerDir != "" {
+			if size, err := dirSize(containerDir); err == nil && size > limits.maxDiskBytes {
+				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_disk_bytes size=%d limit=%d\n", id, pid, size, limits.maxDiskBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
 				store.markStopped(id)
 				return
