@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -511,5 +513,39 @@ func TestUnixSocketPathFromContainerEnv(t *testing.T) {
 	env := []string{"A=B", "DOCKER_HOST=unix:///tmp/sidewhale/docker.sock"}
 	if got := unixSocketPathFromContainerEnv(env); got != "/tmp/sidewhale/docker.sock" {
 		t.Fatalf("unixSocketPathFromContainerEnv = %q, want %q", got, "/tmp/sidewhale/docker.sock")
+	}
+}
+
+func TestIsConfluentKafkaImage(t *testing.T) {
+	tests := []struct {
+		image string
+		want  bool
+	}{
+		{image: "confluentinc/cp-kafka:7.6.1", want: true},
+		{image: "docker.io/confluentinc/cp-kafka:latest", want: true},
+		{image: "apache/kafka:3", want: false},
+	}
+	for _, tt := range tests {
+		if got := isConfluentKafkaImage(tt.image); got != tt.want {
+			t.Fatalf("isConfluentKafkaImage(%q) = %v, want %v", tt.image, got, tt.want)
+		}
+	}
+}
+
+func TestIsTCPPortInUse(t *testing.T) {
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort error: %v", err)
+	}
+	if isTCPPortInUse(port) {
+		t.Fatalf("expected free port %d to be available", port)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatalf("listen on test port: %v", err)
+	}
+	defer ln.Close()
+	if !isTCPPortInUse(port) {
+		t.Fatalf("expected occupied port %d to be reported in use", port)
 	}
 }

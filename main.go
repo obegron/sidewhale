@@ -771,15 +771,22 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		if !envHasKey(env, "RABBITMQ_NODENAME") {
 			env = append(env, "RABBITMQ_NODENAME=rabbit@"+hostname)
 		}
-		if !envHasKey(env, "ERL_EPMD_PORT") {
+		// Avoid overriding Rabbit defaults unless the default distribution ports are already occupied.
+		if !envHasKey(env, "ERL_EPMD_PORT") && isTCPPortInUse(4369) {
 			if epmdPort, epmdErr := allocatePort(); epmdErr == nil {
 				env = append(env, "ERL_EPMD_PORT="+strconv.Itoa(epmdPort))
 			}
 		}
-		if !envHasKey(env, "RABBITMQ_DIST_PORT") {
+		if !envHasKey(env, "RABBITMQ_DIST_PORT") && isTCPPortInUse(25672) {
 			if distPort, distErr := allocatePort(); distErr == nil {
 				env = append(env, "RABBITMQ_DIST_PORT="+strconv.Itoa(distPort))
 			}
+		}
+	}
+	if isConfluentKafkaImage(resolvedRef) || isConfluentKafkaImage(req.Image) {
+		// In sidewhale host-network model, ZooKeeper AdminServer default :8080 can clash with host services.
+		if !envHasKey(env, "ZOOKEEPER_ADMIN_ENABLE_SERVER") {
+			env = append(env, "ZOOKEEPER_ADMIN_ENABLE_SERVER=false")
 		}
 	}
 	if isRyukImage(resolvedRef) || isRyukImage(req.Image) {
@@ -2436,6 +2443,15 @@ func allocatePort() (int, error) {
 	return addr.Port, nil
 }
 
+func isTCPPortInUse(port int) bool {
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
+}
+
 // Placeholder for future use when port bindings are added.
 func parsePort(port string) (int, error) {
 	port = strings.TrimSpace(strings.TrimSuffix(port, "/tcp"))
@@ -3142,6 +3158,12 @@ func isOracleImage(image string) bool {
 	norm := strings.ToLower(strings.TrimSpace(image))
 	norm = strings.TrimPrefix(norm, "docker.io/")
 	return strings.Contains(norm, "oracle")
+}
+
+func isConfluentKafkaImage(image string) bool {
+	norm := strings.ToLower(strings.TrimSpace(image))
+	norm = strings.TrimPrefix(norm, "docker.io/")
+	return strings.Contains(norm, "confluentinc/cp-kafka")
 }
 
 func dockerHostForInnerClients(unixSocketPath, requestHost string) string {
