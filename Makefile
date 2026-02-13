@@ -25,7 +25,7 @@ image:
 
 image-run:
 	@echo "Set:"
-	@echo "  export DOCKER_HOST=tcp://127.0.0.1:23750
+	@echo "  export DOCKER_HOST=tcp://127.0.0.1:23750"
 	@echo ""
 	docker run --rm -p 23750:23750 $(IMAGE_NAME):$(VERSION)
 
