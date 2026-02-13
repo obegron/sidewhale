@@ -27,11 +27,14 @@ RUN curl -fsSL "https://codeload.github.com/proot-me/proot/tar.gz/refs/tags/${PR
     && mkdir -p /out \
     && install -m 0755 proot-src/src/proot /out/proot
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS runtime-deps
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libtalloc2 && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /tmp/sidewhale && chown -R 65532:65532 /tmp/sidewhale
+
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /out/sidewhale /sidewhale
 COPY --from=proot-build /out/proot /usr/local/bin/proot
+COPY --from=runtime-deps /etc/ssl/certs /etc/ssl/certs
+COPY --from=runtime-deps /usr/lib/x86_64-linux-gnu/libtalloc.so.2* /usr/lib/x86_64-linux-gnu/
 USER 65532:65532
 EXPOSE 23750
 ENTRYPOINT ["/sidewhale"]
