@@ -532,6 +532,35 @@ func TestIsConfluentKafkaImage(t *testing.T) {
 	}
 }
 
+func TestEnsureEnvContainsToken(t *testing.T) {
+	t.Run("adds key when missing", func(t *testing.T) {
+		env := []string{"A=B"}
+		got := ensureEnvContainsToken(env, "KAFKA_OPTS", "-Dzookeeper.admin.enableServer=false")
+		if !envHasKey(got, "KAFKA_OPTS") {
+			t.Fatalf("expected KAFKA_OPTS to be added")
+		}
+		if got[len(got)-1] != "KAFKA_OPTS=-Dzookeeper.admin.enableServer=false" {
+			t.Fatalf("unexpected KAFKA_OPTS value: %q", got[len(got)-1])
+		}
+	})
+
+	t.Run("appends token to existing value", func(t *testing.T) {
+		env := []string{"KAFKA_OPTS=-Xmx256m"}
+		got := ensureEnvContainsToken(env, "KAFKA_OPTS", "-Dzookeeper.admin.enableServer=false")
+		if got[0] != "KAFKA_OPTS=-Xmx256m -Dzookeeper.admin.enableServer=false" {
+			t.Fatalf("unexpected KAFKA_OPTS value: %q", got[0])
+		}
+	})
+
+	t.Run("does not duplicate token", func(t *testing.T) {
+		env := []string{"KAFKA_OPTS=-Xmx256m -Dzookeeper.admin.enableServer=false"}
+		got := ensureEnvContainsToken(env, "KAFKA_OPTS", "-Dzookeeper.admin.enableServer=false")
+		if got[0] != env[0] {
+			t.Fatalf("expected value to stay unchanged, got %q", got[0])
+		}
+	})
+}
+
 func TestIsTCPPortInUse(t *testing.T) {
 	port, err := allocatePort()
 	if err != nil {

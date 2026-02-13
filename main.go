@@ -788,6 +788,8 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		if !envHasKey(env, "ZOOKEEPER_ADMIN_ENABLE_SERVER") {
 			env = append(env, "ZOOKEEPER_ADMIN_ENABLE_SERVER=false")
 		}
+		// cp-kafka startup scripts may ignore ZOOKEEPER_ADMIN_ENABLE_SERVER, but this JVM flag is honored by ZooKeeper.
+		env = ensureEnvContainsToken(env, "KAFKA_OPTS", "-Dzookeeper.admin.enableServer=false")
 	}
 	if isRyukImage(resolvedRef) || isRyukImage(req.Image) {
 		env = mergeEnv(env, []string{"DOCKER_HOST=" + dockerHostForInnerClients(unixSocketPath, r.Host)})
@@ -2889,6 +2891,26 @@ func envHasKey(env []string, key string) bool {
 		}
 	}
 	return false
+}
+
+func ensureEnvContainsToken(env []string, key, token string) []string {
+	for i, e := range env {
+		k, v := splitEnv(e)
+		if k != key {
+			continue
+		}
+		if strings.Contains(v, token) {
+			return env
+		}
+		v = strings.TrimSpace(v)
+		if v == "" {
+			env[i] = key + "=" + token
+		} else {
+			env[i] = key + "=" + v + " " + token
+		}
+		return env
+	}
+	return append(env, key+"="+token)
 }
 
 func deduplicateEnv(env []string) []string {
