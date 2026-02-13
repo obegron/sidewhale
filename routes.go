@@ -58,32 +58,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 	})
 
 	mux.HandleFunc("/images/create", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		ref := r.URL.Query().Get("fromImage")
-		if ref == "" {
-			ref = r.URL.Query().Get("image")
-		}
-		tag := strings.TrimSpace(r.URL.Query().Get("tag"))
-		if ref == "" {
-			writeError(w, http.StatusBadRequest, "missing fromImage")
-			return
-		}
-		if tag != "" && !strings.Contains(ref, "@") && !imageRefHasTag(ref) {
-			ref = ref + ":" + tag
-		}
-		resolvedRef := rewriteImageReference(ref, cfg.mirrorRules)
-		if !isImageAllowed(resolvedRef, cfg.allowedPrefixes) {
-			writeError(w, http.StatusForbidden, "image not allowed by policy")
-			return
-		}
-		if _, _, err := ensureImage(r.Context(), resolvedRef, store.stateDir, m, cfg.trustInsecure); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		handleImagesCreate(w, r, store, m, cfg, ensureImage)
 	})
 	mux.HandleFunc("/images/json", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
