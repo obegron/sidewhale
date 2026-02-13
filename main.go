@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -346,6 +347,21 @@ func main() {
 				return
 			}
 			handleLogs(w, r, store, id)
+		case "archive":
+			switch r.Method {
+			case http.MethodGet:
+				handleArchiveGet(w, r, store, id)
+			case http.MethodPut:
+				handleArchivePut(w, r, store, id)
+			default:
+				writeError(w, http.StatusNotFound, "not found")
+			}
+		case "wait":
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusNotFound, "not found")
+				return
+			}
+			handleWait(w, r, store, id)
 		default:
 			if action == "" && r.Method == http.MethodDelete {
 				handleDelete(w, r, store, id)
@@ -440,6 +456,10 @@ func requestTimeoutFor(r *http.Request) time.Duration {
 	}
 	// Docker clients may keep log follow streams open for long periods.
 	if r.Method == http.MethodGet && strings.HasSuffix(path, "/logs") && parseDockerBool(r.URL.Query().Get("follow"), false) {
+		return 0
+	}
+	// Wait endpoints are expected to block until exit.
+	if r.Method == http.MethodPost && strings.HasSuffix(path, "/wait") {
 		return 0
 	}
 	return 30 * time.Second
@@ -987,9 +1007,9 @@ func handleExecJSON(w http.ResponseWriter, r *http.Request, store *containerStor
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ID":         inst.ID,
-		"Running":    inst.Running,
-		"ExitCode":   inst.ExitCode,
+		"ID":       inst.ID,
+		"Running":  inst.Running,
+		"ExitCode": inst.ExitCode,
 		"ProcessConfig": map[string]interface{}{
 			"entrypoint": firstArg(inst.Cmd),
 			"arguments":  restArgs(inst.Cmd),
@@ -1078,6 +1098,412 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 				return
 			}
 		}
+	}
+}
+
+func handleWait(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
+	condition := strings.TrimSpace(r.URL.Query().Get("condition"))
+	if condition == "" {
+		condition = "not-running"
+	}
+	switch condition {
+	case "not-running", "next-exit", "removed":
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported wait condition")
+		return
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		c, ok := store.get(id)
+		if !ok {
+			if condition == "removed" {
+				writeJSON(w, http.StatusOK, map[string]interface{}{"StatusCode": 0, "Error": nil})
+				return
+			}
+			writeError(w, http.StatusNotFound, "container not found")
+			return
+		}
+		if c.Running && !processAlive(c.Pid) {
+			store.markStopped(c.ID)
+			c, _ = store.get(id)
+		}
+		if c == nil || !c.Running {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"StatusCode": 0, "Error": nil})
+			return
+		}
+
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
+	c, ok := store.get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "container not found")
+		return
+	}
+	queryPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	targetPath, err := resolvePathInRootfs(c.Rootfs, queryPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid archive path")
+		return
+	}
+	info, err := os.Lstat(targetPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "path not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "stat failed")
+		return
+	}
+
+	linkTarget := ""
+	if info.Mode()&os.ModeSymlink != 0 {
+		if link, linkErr := os.Readlink(targetPath); linkErr == nil {
+			linkTarget = link
+		}
+	}
+	statPayload := map[string]interface{}{
+		"name":       filepath.Base(strings.TrimRight(filepath.Clean(queryPath), string(os.PathSeparator))),
+		"size":       info.Size(),
+		"mode":       uint32(info.Mode()),
+		"mtime":      info.ModTime().UTC().Format(time.RFC3339Nano),
+		"linkTarget": linkTarget,
+	}
+	statJSON, err := json.Marshal(statPayload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat encode failed")
+		return
+	}
+
+	tarName := filepath.Base(filepath.Clean(queryPath))
+	if tarName == "." || tarName == string(os.PathSeparator) {
+		tarName = filepath.Base(targetPath)
+	}
+	if tarName == "." || tarName == string(os.PathSeparator) || tarName == "" {
+		tarName = "archive"
+	}
+	tarName = path.Clean("/" + filepath.ToSlash(tarName))
+	tarName = strings.TrimPrefix(tarName, "/")
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(statJSON))
+	w.WriteHeader(http.StatusOK)
+
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+	if err := writePathToTar(tw, targetPath, tarName); err != nil {
+		return
+	}
+}
+
+func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
+	c, ok := store.get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "container not found")
+		return
+	}
+	queryPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	targetPath, err := resolvePathInRootfs(c.Rootfs, queryPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid archive path")
+		return
+	}
+	if err := extractArchiveToPath(r.Body, targetPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func resolvePathInRootfs(rootfs string, requested string) (string, error) {
+	req := strings.TrimSpace(requested)
+	if req == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	clean := path.Clean("/" + req)
+	rel := strings.TrimPrefix(clean, "/")
+	if rel == "." || rel == "" {
+		rel = ""
+	}
+	full := filepath.Join(rootfs, filepath.FromSlash(rel))
+	rootClean := filepath.Clean(rootfs)
+	relCheck, err := filepath.Rel(rootClean, full)
+	if err != nil {
+		return "", err
+	}
+	if relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes rootfs")
+	}
+	return full, nil
+}
+
+func extractArchiveToPath(r io.Reader, targetPath string) error {
+	tmpDir, err := os.MkdirTemp("", "tcexecutor-archive-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	top, err := untarToDir(r, tmpDir)
+	if err != nil {
+		return err
+	}
+	if len(top) == 0 {
+		return nil
+	}
+
+	info, statErr := os.Stat(targetPath)
+	targetExists := statErr == nil
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		return statErr
+	}
+	if targetExists && info.IsDir() {
+		return copyDirContents(tmpDir, targetPath)
+	}
+	if len(top) == 1 {
+		return copyFSNode(filepath.Join(tmpDir, top[0]), targetPath)
+	}
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		return err
+	}
+	return copyDirContents(tmpDir, targetPath)
+}
+
+func untarToDir(r io.Reader, dst string) ([]string, error) {
+	tr := tar.NewReader(r)
+	seenTop := map[string]struct{}{}
+	var topOrder []string
+
+	addTop := func(cleanName string) {
+		first := strings.Split(cleanName, "/")[0]
+		if first == "" {
+			return
+		}
+		if _, ok := seenTop[first]; ok {
+			return
+		}
+		seenTop[first] = struct{}{}
+		topOrder = append(topOrder, first)
+	}
+
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return topOrder, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if h == nil {
+			continue
+		}
+		cleanName, ok := normalizeLayerPath(h.Name)
+		if !ok {
+			continue
+		}
+		addTop(cleanName)
+		target := filepath.Join(dst, filepath.FromSlash(cleanName))
+
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, fs.FileMode(h.Mode)); err != nil {
+				return nil, err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
+			}
+			_ = os.RemoveAll(target)
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
+			if err != nil {
+				return nil, err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return nil, err
+			}
+			if err := f.Close(); err != nil {
+				return nil, err
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
+			}
+			_ = os.RemoveAll(target)
+			if err := os.Symlink(h.Linkname, target); err != nil {
+				return nil, err
+			}
+		case tar.TypeLink:
+			linkName, ok := normalizeLayerPath(h.Linkname)
+			if !ok {
+				continue
+			}
+			linkTarget := filepath.Join(dst, filepath.FromSlash(linkName))
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
+			}
+			_ = os.RemoveAll(target)
+			if err := os.Link(linkTarget, target); err != nil {
+				return nil, err
+			}
+		default:
+			// Ignore unsupported tar entry types.
+			continue
+		}
+	}
+}
+
+func copyDirContents(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		src := filepath.Join(srcDir, entry.Name())
+		dst := filepath.Join(dstDir, entry.Name())
+		if err := copyFSNode(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFSNode(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		link, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		_ = os.RemoveAll(dst)
+		return os.Symlink(link, dst)
+	case info.IsDir():
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyFSNode(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return os.Chmod(dst, info.Mode().Perm())
+	case info.Mode().IsRegular():
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		_ = os.RemoveAll(dst)
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			in.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		in.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return os.Chmod(dst, info.Mode().Perm())
+	default:
+		return nil
+	}
+}
+
+func writePathToTar(tw *tar.Writer, sourcePath, nameInTar string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	nameInTar = strings.TrimPrefix(path.Clean("/"+filepath.ToSlash(nameInTar)), "/")
+	if nameInTar == "." || nameInTar == "" {
+		nameInTar = filepath.Base(sourcePath)
+	}
+
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		link, err := os.Readlink(sourcePath)
+		if err != nil {
+			return err
+		}
+		h, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		h.Name = nameInTar
+		return tw.WriteHeader(h)
+	case info.IsDir():
+		h, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		h.Name = nameInTar + "/"
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(sourcePath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			childSrc := filepath.Join(sourcePath, entry.Name())
+			childTar := path.Join(nameInTar, entry.Name())
+			if err := writePathToTar(tw, childSrc, childTar); err != nil {
+				return err
+			}
+		}
+		return nil
+	case info.Mode().IsRegular():
+		h, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		h.Name = nameInTar
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		f, err := os.Open(sourcePath)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	default:
+		return nil
 	}
 }
 
