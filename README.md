@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/sidewhale-logo.png" alt="sidewhale logo" width="560" />
-</p>
+![sidewhale logo](assets/sidewhale-logo.png)
 
 # sidewhale
 
