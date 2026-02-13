@@ -30,7 +30,7 @@ RUN curl -fsSL "https://codeload.github.com/proot-me/proot/tar.gz/refs/tags/${PR
 FROM debian:trixie-slim AS runtime-deps
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libtalloc2 && rm -rf /var/lib/apt/lists/*
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /out/sidewhale /sidewhale
 COPY --from=proot-build /out/proot /usr/local/bin/proot
 COPY --from=runtime-deps /etc/ssl/certs /etc/ssl/certs
