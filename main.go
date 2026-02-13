@@ -1326,7 +1326,9 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 		writeError(w, http.StatusBadRequest, "invalid archive path")
 		return
 	}
-	if err := extractArchiveToPath(r.Body, targetPath); err != nil {
+	if err := extractArchiveToPath(r.Body, targetPath, func(dst string) string {
+		return mapArchiveDestinationPath(c, dst)
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
 		return
 	}
@@ -1368,7 +1370,7 @@ func resolvePathUnder(base string, rel string) (string, error) {
 	return full, nil
 }
 
-func extractArchiveToPath(r io.Reader, targetPath string) error {
+func extractArchiveToPath(r io.Reader, targetPath string, mapDst func(string) string) error {
 	tmpDir, err := os.MkdirTemp("", "tcexecutor-archive-*")
 	if err != nil {
 		return err
@@ -1389,15 +1391,71 @@ func extractArchiveToPath(r io.Reader, targetPath string) error {
 		return statErr
 	}
 	if targetExists && info.IsDir() {
-		return copyDirContents(tmpDir, targetPath)
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(mapArchivePath(targetPath, mapDst), 0o755); err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			src := filepath.Join(tmpDir, entry.Name())
+			dst := filepath.Join(targetPath, entry.Name())
+			if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if len(top) == 1 {
-		return copyFSNode(filepath.Join(tmpDir, top[0]), targetPath)
+		return copyFSNode(filepath.Join(tmpDir, top[0]), mapArchivePath(targetPath, mapDst))
 	}
-	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+	if err := os.MkdirAll(mapArchivePath(targetPath, mapDst), 0o755); err != nil {
 		return err
 	}
-	return copyDirContents(tmpDir, targetPath)
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		src := filepath.Join(tmpDir, entry.Name())
+		dst := filepath.Join(targetPath, entry.Name())
+		if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mapArchivePath(path string, mapDst func(string) string) string {
+	if mapDst == nil {
+		return path
+	}
+	mapped := mapDst(path)
+	if strings.TrimSpace(mapped) == "" {
+		return path
+	}
+	return mapped
+}
+
+func mapArchiveDestinationPath(c *Container, dst string) string {
+	if c == nil {
+		return dst
+	}
+	rootTmp := filepath.Clean(filepath.Join(c.Rootfs, "tmp"))
+	cleanDst := filepath.Clean(dst)
+	if cleanDst != rootTmp && !strings.HasPrefix(cleanDst, rootTmp+string(filepath.Separator)) {
+		return dst
+	}
+	rel, err := filepath.Rel(rootTmp, cleanDst)
+	if err != nil {
+		return dst
+	}
+	mapped, err := resolvePathUnder(containerTmpDir(c), rel)
+	if err != nil {
+		return dst
+	}
+	return mapped
 }
 
 func untarToDir(r io.Reader, dst string) ([]string, error) {
