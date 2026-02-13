@@ -9,6 +9,42 @@ import (
 	"testing"
 )
 
+func TestMapArchiveDestinationPath(t *testing.T) {
+	rootfs := filepath.Join("/tmp", "rootfs")
+	c := &Container{Rootfs: rootfs}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "rootfs tmp file redirected",
+			in:   filepath.Join(rootfs, "tmp", "testcontainers_start.sh"),
+			want: filepath.Join("/tmp", "tmp", "testcontainers_start.sh"),
+		},
+		{
+			name: "rootfs tmp dir redirected",
+			in:   filepath.Join(rootfs, "tmp"),
+			want: filepath.Join("/tmp", "tmp"),
+		},
+		{
+			name: "non tmp path unchanged",
+			in:   filepath.Join(rootfs, "etc", "hosts"),
+			want: filepath.Join(rootfs, "etc", "hosts"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapArchiveDestinationPath(c, tt.in)
+			if got != tt.want {
+				t.Fatalf("mapArchiveDestinationPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolvePathUnderRejectsEscape(t *testing.T) {
 	base := t.TempDir()
 	if _, err := resolvePathUnder(base, "../etc/passwd"); err == nil {
