@@ -1,6 +1,8 @@
 ![sidewhale logo](assets/sidewhale-logo.png)
 
-`sidewhale` is a small Docker API shim for running Testcontainers workloads without a Docker daemon.
+`sidewhale` is a small Docker API shim for unprivileged, containerized Testcontainers execution.
+
+It is designed to run as a sidecar (for example in Kubernetes) so tests can use a Docker-compatible API without access to a host Docker socket.
 
 It is not a container runtime and does not try to be Docker-compatible beyond what Testcontainers needs.
 
@@ -60,14 +62,14 @@ Not implemented:
 
 - Most other Docker endpoints return `404`.
 
-## Quick Run
+## Local Smoke Run
 
 ```bash
 docker build -t sidewhale:dev .
 docker run --rm --network host sidewhale:dev --listen :23750
 ```
 
-Then point Testcontainers/Docker client to:
+Then point Testcontainers (or any Docker API client) to:
 
 ```bash
 DOCKER_HOST=tcp://127.0.0.1:23750
