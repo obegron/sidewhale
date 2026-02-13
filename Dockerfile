@@ -6,7 +6,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}'" -o /out/sidewhale .
 
-FROM debian:bookworm-slim AS proot-build
+FROM debian:trixie-slim AS proot-build
 ARG PROOT_VERSION=v5.4.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -27,7 +27,7 @@ RUN curl -fsSL "https://codeload.github.com/proot-me/proot/tar.gz/refs/tags/${PR
     && mkdir -p /out \
     && install -m 0755 proot-src/src/proot /out/proot
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libtalloc2 && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /tmp/sidewhale && chown -R 65532:65532 /tmp/sidewhale
 COPY --from=build /out/sidewhale /sidewhale
