@@ -53,3 +53,77 @@ func TestIsTCPPortInUse(t *testing.T) {
 		t.Fatalf("expected occupied port %d to be reported in use", port)
 	}
 }
+
+func TestParsePort(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    int
+		wantErr bool
+	}{
+		{in: "5432/tcp", want: 5432},
+		{in: "8080", want: 8080},
+		{in: " 6379/tcp ", want: 6379},
+		{in: "abc", wantErr: true},
+	}
+	for _, tt := range tests {
+		got, err := parsePort(tt.in)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("parsePort(%q) expected error, got nil", tt.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parsePort(%q) unexpected error: %v", tt.in, err)
+		}
+		if got != tt.want {
+			t.Fatalf("parsePort(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestResolvePortBindingsHonorsExplicitHostPort(t *testing.T) {
+	exposed := map[string]struct{}{
+		"5432/tcp": {},
+	}
+	hostBindings := map[string][]portBinding{
+		"5432/tcp": {
+			{HostPort: "15432"},
+		},
+	}
+	got, err := resolvePortBindings(exposed, hostBindings)
+	if err != nil {
+		t.Fatalf("resolvePortBindings error: %v", err)
+	}
+	if got[5432] != 15432 {
+		t.Fatalf("resolvePortBindings host port = %d, want 15432", got[5432])
+	}
+}
+
+func TestResolvePortBindingsAllocatesWhenHostPortMissing(t *testing.T) {
+	exposed := map[string]struct{}{
+		"6379/tcp": {},
+	}
+	got, err := resolvePortBindings(exposed, nil)
+	if err != nil {
+		t.Fatalf("resolvePortBindings error: %v", err)
+	}
+	if got[6379] == 0 {
+		t.Fatalf("expected allocated host port for 6379, got 0")
+	}
+}
+
+func TestResolvePortBindingsRejectsInvalidHostPort(t *testing.T) {
+	exposed := map[string]struct{}{
+		"5432/tcp": {},
+	}
+	hostBindings := map[string][]portBinding{
+		"5432/tcp": {
+			{HostPort: "not-a-port"},
+		},
+	}
+	_, err := resolvePortBindings(exposed, hostBindings)
+	if err == nil {
+		t.Fatalf("expected invalid host port error, got nil")
+	}
+}

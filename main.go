@@ -2461,7 +2461,9 @@ func isTCPPortInUse(port int) bool {
 
 // Placeholder for future use when port bindings are added.
 func parsePort(port string) (int, error) {
-	port = strings.TrimSpace(strings.TrimSuffix(port, "/tcp"))
+	port = strings.TrimSpace(port)
+	port = strings.TrimSuffix(port, "/tcp")
+	port = strings.TrimSpace(port)
 	p, err := strconv.Atoi(port)
 	if err != nil {
 		return 0, fmt.Errorf("invalid port: %w", err)
