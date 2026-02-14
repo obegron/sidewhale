@@ -34,6 +34,7 @@ type Container struct {
 type containerStore struct {
 	mu         sync.Mutex
 	containers map[string]*Container
+	networks   map[string]*Network
 	execs      map[string]*ExecInstance
 	stateDir   string
 	proxies    map[string][]*portProxy
@@ -136,4 +137,54 @@ type imageMirrorFile struct {
 type portProxy struct {
 	ln   net.Listener
 	stop chan struct{}
+}
+
+type Network struct {
+	ID         string                     `json:"Id"`
+	Name       string                     `json:"Name"`
+	Driver     string                     `json:"Driver"`
+	Scope      string                     `json:"Scope"`
+	Created    string                     `json:"Created"`
+	Internal   bool                       `json:"Internal"`
+	Attachable bool                       `json:"Attachable"`
+	Ingress    bool                       `json:"Ingress"`
+	EnableIPv6 bool                       `json:"EnableIPv6,omitempty"`
+	Labels     map[string]string          `json:"Labels,omitempty"`
+	Options    map[string]string          `json:"Options,omitempty"`
+	IPAM       map[string]interface{}     `json:"IPAM,omitempty"`
+	Containers map[string]*NetworkEndpoint `json:"Containers,omitempty"`
+}
+
+type NetworkEndpoint struct {
+	Name      string   `json:"Name"`
+	Endpoint  string   `json:"EndpointID"`
+	Mac       string   `json:"MacAddress"`
+	IPv4      string   `json:"IPv4Address"`
+	IPv6      string   `json:"IPv6Address"`
+	Aliases   []string `json:"Aliases,omitempty"`
+}
+
+type networkCreateRequest struct {
+	Name           string                 `json:"Name"`
+	CheckDuplicate bool                   `json:"CheckDuplicate"`
+	Driver         string                 `json:"Driver"`
+	Internal       bool                   `json:"Internal"`
+	Attachable     bool                   `json:"Attachable"`
+	Ingress        bool                   `json:"Ingress"`
+	EnableIPv6     bool                   `json:"EnableIPv6"`
+	IPAM           map[string]interface{} `json:"IPAM"`
+	Options        map[string]string      `json:"Options"`
+	Labels         map[string]string      `json:"Labels"`
+}
+
+type networkConnectRequest struct {
+	Container      string `json:"Container"`
+	EndpointConfig struct {
+		Aliases []string `json:"Aliases"`
+	} `json:"EndpointConfig"`
+}
+
+type networkDisconnectRequest struct {
+	Container string `json:"Container"`
+	Force     bool   `json:"Force"`
 }

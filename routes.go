@@ -83,7 +83,46 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 		}
 		handleEvents(w, r)
 	})
-	mux.HandleFunc("/networks/prune", handleNetworksPrune)
+	mux.HandleFunc("/networks/prune", func(w http.ResponseWriter, r *http.Request) {
+		handleNetworksPrune(w, r, store)
+	})
+	mux.HandleFunc("/networks/create", func(w http.ResponseWriter, r *http.Request) {
+		handleNetworksCreate(w, r, store)
+	})
+	mux.HandleFunc("/networks", func(w http.ResponseWriter, r *http.Request) {
+		handleNetworksList(w, r, store)
+	})
+	mux.HandleFunc("/networks/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/networks/")
+		parts := strings.Split(path, "/")
+		if len(parts) < 1 || strings.TrimSpace(parts[0]) == "" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		ref := parts[0]
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
+		}
+		switch action {
+		case "":
+			if r.Method == http.MethodGet {
+				handleNetworkInspect(w, r, store, ref)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				handleNetworkDelete(w, r, store, ref)
+				return
+			}
+		case "connect":
+			handleNetworkConnect(w, r, store, ref)
+			return
+		case "disconnect":
+			handleNetworkDisconnect(w, r, store, ref)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not found")
+	})
 	mux.HandleFunc("/volumes/prune", handleVolumesPrune)
 
 	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {

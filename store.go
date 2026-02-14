@@ -13,10 +13,18 @@ func (s *containerStore) init() error {
 	if err := os.MkdirAll(filepath.Join(s.stateDir, "containers"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(s.stateDir, "networks"), 0o755); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(s.stateDir, "images"), 0o755); err != nil {
 		return err
 	}
-	return s.loadAll()
+	if err := s.loadAll(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ensureDefaultNetworkLocked()
 }
 
 func (s *containerStore) loadAll() error {
@@ -38,7 +46,7 @@ func (s *containerStore) loadAll() error {
 		}
 		s.containers[c.ID] = &c
 	}
-	return nil
+	return s.loadNetworks()
 }
 
 func (s *containerStore) containerPath(id string) string {

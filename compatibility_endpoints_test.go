@@ -75,11 +75,15 @@ func TestTopEndpointReturnsProcessShape(t *testing.T) {
 func TestPruneEndpointsReturnDockerShape(t *testing.T) {
 	store := &containerStore{
 		containers: map[string]*Container{},
+		networks:   map[string]*Network{},
 		execs:      map[string]*ExecInstance{},
 		proxies:    map[string][]*portProxy{},
 		stateDir:   t.TempDir(),
 	}
 	cfg := appConfig{stateDir: store.stateDir}
+	if err := store.init(); err != nil {
+		t.Fatalf("store init: %v", err)
+	}
 	handler := timeoutMiddleware(apiVersionMiddleware(newRouter(store, &metrics{}, cfg, &probeState{})))
 
 	tests := []struct {
@@ -108,6 +112,72 @@ func TestPruneEndpointsReturnDockerShape(t *testing.T) {
 				t.Fatalf("POST %s payload missing key %q: %s", tt.path, key, rec.Body.String())
 			}
 		}
+	}
+}
+
+func TestNetworkEndpointsCreateConnectInspect(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{
+			"abc123": {
+				ID:      "abc123",
+				Name:    "alpha",
+				Image:   "alpine:3.20",
+				Created: time.Now().UTC(),
+			},
+		},
+		networks: map[string]*Network{},
+		execs:    map[string]*ExecInstance{},
+		proxies:  map[string][]*portProxy{},
+		stateDir: t.TempDir(),
+	}
+	if err := store.init(); err != nil {
+		t.Fatalf("store init: %v", err)
+	}
+	cfg := appConfig{stateDir: store.stateDir}
+	handler := timeoutMiddleware(apiVersionMiddleware(newRouter(store, &metrics{}, cfg, &probeState{})))
+
+	createReq := httptest.NewRequest(http.MethodPost, "/networks/create", bytes.NewBufferString(`{"Name":"tcnet","CheckDuplicate":true}`))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("POST /networks/create status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create response decode: %v", err)
+	}
+	netID, _ := created["Id"].(string)
+	if netID == "" {
+		t.Fatalf("create response missing Id: %s", createRec.Body.String())
+	}
+
+	connectReq := httptest.NewRequest(http.MethodPost, "/networks/"+netID+"/connect", bytes.NewBufferString(`{"Container":"abc123","EndpointConfig":{"Aliases":["svc"]}}`))
+	connectRec := httptest.NewRecorder()
+	handler.ServeHTTP(connectRec, connectReq)
+	if connectRec.Code != http.StatusOK {
+		t.Fatalf("POST /networks/{id}/connect status=%d body=%s", connectRec.Code, connectRec.Body.String())
+	}
+
+	inspectReq := httptest.NewRequest(http.MethodGet, "/networks/"+netID, nil)
+	inspectRec := httptest.NewRecorder()
+	handler.ServeHTTP(inspectRec, inspectReq)
+	if inspectRec.Code != http.StatusOK {
+		t.Fatalf("GET /networks/{id} status=%d body=%s", inspectRec.Code, inspectRec.Body.String())
+	}
+	var inspected map[string]interface{}
+	if err := json.Unmarshal(inspectRec.Body.Bytes(), &inspected); err != nil {
+		t.Fatalf("inspect response decode: %v", err)
+	}
+	containers, ok := inspected["Containers"].(map[string]interface{})
+	if !ok || len(containers) == 0 {
+		t.Fatalf("network inspect missing connected containers: %s", inspectRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/networks", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /networks status=%d body=%s", listRec.Code, listRec.Body.String())
 	}
 }
 

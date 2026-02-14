@@ -135,6 +135,11 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		Cmd:          append(entrypoint, cmd...),
 	}
 
+	if err := store.connectContainerToNetwork(builtInBridgeNetworkID, c, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "network attach failed")
+		return
+	}
+
 	if err := store.save(c); err != nil {
 		writeError(w, http.StatusInternalServerError, "state write failed")
 		return
@@ -446,6 +451,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 	store.mu.Lock()
 	delete(store.containers, c.ID)
 	store.mu.Unlock()
+	store.disconnectContainerFromAllNetworks(c.ID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -465,6 +471,11 @@ func handleJSON(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	}
 	path := firstArg(c.Cmd)
 	args := restArgs(c.Cmd)
+	networks := store.networkSettingsForContainer(c.ID)
+	networkMode := "default"
+	if _, ok := networks["bridge"]; ok {
+		networkMode = "bridge"
+	}
 	resp := map[string]interface{}{
 		"Id":      c.ID,
 		"Name":    containerDisplayName(c),
@@ -495,12 +506,13 @@ func handleJSON(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			"ExposedPorts": exposed,
 		},
 		"HostConfig": map[string]interface{}{
-			"NetworkMode":  "default",
+			"NetworkMode":  networkMode,
 			"PortBindings": toDockerPorts(c.Ports),
 		},
 		"Mounts": []map[string]interface{}{},
 		"NetworkSettings": map[string]interface{}{
-			"Ports": toDockerPorts(c.Ports),
+			"Ports":    toDockerPorts(c.Ports),
+			"Networks": networks,
 		},
 	}
 	writeJSON(w, http.StatusOK, resp)

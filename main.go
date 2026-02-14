@@ -34,6 +34,7 @@ func main() {
 
 	store := &containerStore{
 		containers: make(map[string]*Container),
+		networks:   make(map[string]*Network),
 		execs:      make(map[string]*ExecInstance),
 		stateDir:   cfg.stateDir,
 		proxies:    make(map[string][]*portProxy),
