@@ -134,10 +134,14 @@ func normalizeContainerHostname(hostname string) string {
 }
 
 func writeContainerIdentityFiles(rootfs, hostname string) error {
-	return writeContainerIdentityFilesWithAliases(rootfs, hostname, nil)
+	return writeContainerIdentityFilesWithAliasesAndHosts(rootfs, hostname, nil, nil)
 }
 
 func writeContainerIdentityFilesWithAliases(rootfs, hostname string, aliases []string) error {
+	return writeContainerIdentityFilesWithAliasesAndHosts(rootfs, hostname, aliases, nil)
+}
+
+func writeContainerIdentityFilesWithAliasesAndHosts(rootfs, hostname string, aliases, extraHosts []string) error {
 	hostname = normalizeContainerHostname(hostname)
 	if hostname == "" {
 		return nil
@@ -184,8 +188,35 @@ func writeContainerIdentityFilesWithAliases(rootfs, hostname string, aliases []s
 			content.WriteString("127.0.0.1\t" + alias + "\n")
 		}
 	}
+	for _, raw := range extraHosts {
+		host, ip, ok := parseExtraHost(raw)
+		if !ok {
+			continue
+		}
+		content.WriteString(ip + "\t" + host + "\n")
+	}
 	hostsPath := filepath.Join(etcDir, "hosts")
 	return os.WriteFile(hostsPath, []byte(content.String()), 0o644)
+}
+
+func parseExtraHost(raw string) (host, ip string, ok bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", "", false
+	}
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		parts = strings.SplitN(s, "=", 2)
+		if len(parts) != 2 {
+			return "", "", false
+		}
+	}
+	host = normalizeContainerHostname(parts[0])
+	ip = strings.TrimSpace(parts[1])
+	if host == "" || ip == "" {
+		return "", "", false
+	}
+	return host, ip, true
 }
 
 func hostsFileHasHostname(data []byte, hostname string) bool {
@@ -236,6 +267,16 @@ func isRedisImage(image string) bool {
 func isLLdapImage(image string) bool {
 	image = strings.ToLower(normalizeImageToken(image))
 	return strings.Contains(image, "lldap/lldap")
+}
+
+func isNginxImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "/nginx:") || strings.HasSuffix(image, "/nginx")
+}
+
+func isSSHDImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "testcontainers/sshd")
 }
 
 func isZookeeperImage(image string) bool {

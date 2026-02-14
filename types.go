@@ -30,6 +30,7 @@ type Container struct {
 	WorkingDir   string              `json:"WorkingDir"`
 	LoopbackIP   string              `json:"LoopbackIP,omitempty"`
 	NetworkMode  string              `json:"NetworkMode,omitempty"`
+	ExtraHosts   []string            `json:"ExtraHosts,omitempty"`
 }
 
 type containerStore struct {
@@ -94,6 +95,7 @@ type execCreateResponse struct {
 type hostConfig struct {
 	NetworkMode  string                   `json:"NetworkMode"`
 	PortBindings map[string][]portBinding `json:"PortBindings"`
+	ExtraHosts   []string                 `json:"ExtraHosts"`
 }
 
 type portBinding struct {

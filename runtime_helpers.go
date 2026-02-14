@@ -105,9 +105,17 @@ func buildContainerCommand(rootfs, tmpBind, workingDir, userSpec string, extraBi
 	if err := ensureSyntheticUserIdentity(rootfs, userSpec); err != nil {
 		return nil, err
 	}
-	prootPath, err := findProotPath()
+	prootPath, args, err := buildProotCommand(rootfs, tmpBind, workingDir, userSpec, extraBinds, cmdArgs)
 	if err != nil {
 		return nil, err
+	}
+	return exec.Command(prootPath, args...), nil
+}
+
+func buildProotCommand(rootfs, tmpBind, workingDir, userSpec string, extraBinds []string, cmdArgs []string) (string, []string, error) {
+	prootPath, err := findProotPath()
+	if err != nil {
+		return "", nil, err
 	}
 	if workingDir == "" {
 		workingDir = "/"
@@ -140,7 +148,7 @@ func buildContainerCommand(rootfs, tmpBind, workingDir, userSpec string, extraBi
 	}
 
 	args = append(args, cmdArgs...)
-	return exec.Command(prootPath, args...), nil
+	return prootPath, args, nil
 }
 
 func findProotPath() (string, error) {

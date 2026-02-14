@@ -32,6 +32,10 @@ Current focus:
 - Oracle image currently fails under `proot` due missing syscall behavior
 - Some clients may log noisy `Socket closed` traces when log-follow streams are closed
 - No support for many Docker APIs (networks, volumes, build, exec/attach parity, etc.)
+- Host backend only: no per-container network namespace or embedded DNS
+- Cross-container name resolution (for example `broker-1` in multi-node stacks) is not supported
+- Privileged internal bind ports (`<1024`) can fail for images that insist on binding as non-root
+- Port publishing is best-effort TCP proxying, not Docker bridge/NAT semantics
 
 ## Docker API Support Matrix
 

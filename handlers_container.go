@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -134,6 +136,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		StderrPath:   stderrPath,
 		Cmd:          append(entrypoint, cmd...),
 		NetworkMode:  "bridge",
+		ExtraHosts:   normalizeExtraHosts(req.HostConfig.ExtraHosts),
 	}
 
 	requestedMode := strings.TrimSpace(req.HostConfig.NetworkMode)
@@ -149,6 +152,9 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		networkRef = strings.TrimSpace(networkRef)
 		if networkRef == "" {
 			continue
+		}
+		if strings.EqualFold(networkRef, "default") {
+			networkRef = "bridge"
 		}
 		n, ok := store.getNetwork(networkRef)
 		if !ok {
@@ -262,6 +268,56 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		runtimeTargets[3890] = c.LoopbackIP + ":3890"
 		runtimeTargets[17170] = c.LoopbackIP + ":17170"
 	}
+	if isNginxImage(c.Image) {
+		if strings.TrimSpace(c.LoopbackIP) == "" {
+			ip, allocErr := store.allocateLoopbackIP()
+			if allocErr != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
+				return
+			}
+			c.LoopbackIP = ip
+		}
+		if err := writeNginxCompatConfig(c.Rootfs, 8080); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "start failed: nginx compat failed")
+			return
+		}
+		cmdArgs = applyNginxRuntimeCompatCommand(cmdArgs, 8080)
+		runtimeTargets[80] = c.LoopbackIP + ":8080"
+	}
+	if isSSHDImage(c.Image) {
+		if strings.TrimSpace(c.LoopbackIP) == "" {
+			ip, allocErr := store.allocateLoopbackIP()
+			if allocErr != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
+				return
+			}
+			c.LoopbackIP = ip
+		}
+		const sshdCompatPort = 2222
+		cmdArgs = applySSHDRuntimeCompat(cmdArgs, c.LoopbackIP, sshdCompatPort)
+		runtimeTargets[22] = fmt.Sprintf("%s:%d", c.LoopbackIP, sshdCompatPort)
+	}
 
 	socketBinds, err := dockerSocketBindsForContainer(c, unixSocketPathFromContainerEnv(c.Env))
 	if err != nil {
@@ -286,7 +342,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		writeError(w, http.StatusInternalServerError, "start failed: tmp permission fix failed")
 		return
 	}
-	if err := writeContainerIdentityFilesWithAliases(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID)); err != nil {
+	if err := writeContainerIdentityFilesWithAliasesAndHosts(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID), c.ExtraHosts); err != nil {
 		if reserved {
 			m.mu.Lock()
 			if m.running > 0 {
@@ -421,6 +477,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		writeError(w, http.StatusInternalServerError, "state write failed")
 		return
 	}
+	refreshNetworkAliasHosts(store, c.ID)
 
 	startedAt := time.Now()
 
@@ -890,6 +947,27 @@ func clonePortTargets(in map[int]string) map[int]string {
 	return out
 }
 
+func normalizeExtraHosts(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		host, ip, ok := parseExtraHost(raw)
+		if !ok {
+			continue
+		}
+		key := host + "=" + ip
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, host+":"+ip)
+	}
+	return out
+}
+
 func applyRedisRuntimeCompat(cmdArgs []string, loopbackIP string) []string {
 	if len(cmdArgs) == 0 || strings.TrimSpace(loopbackIP) == "" {
 		return cmdArgs
@@ -930,6 +1008,143 @@ func applyLLdapRuntimeCompatEnv(env []string, loopbackIP string) []string {
 		"LLDAP_HTTP_HOST=" + ip,
 	}
 	return mergeEnv(defaults, env)
+}
+
+func applySSHDRuntimeCompat(cmdArgs []string, loopbackIP string, port int) []string {
+	ip := strings.TrimSpace(loopbackIP)
+	if len(cmdArgs) == 0 || ip == "" || port <= 0 {
+		return cmdArgs
+	}
+	if hasArg(cmdArgs, "-p") {
+		return cmdArgs
+	}
+	portArg := strconv.Itoa(port)
+	listenArg := "ListenAddress=" + ip
+	if len(cmdArgs) >= 3 {
+		base := strings.ToLower(filepath.Base(strings.TrimSpace(cmdArgs[0])))
+		if (base == "sh" || base == "bash") && cmdArgs[1] == "-c" {
+			script := cmdArgs[2]
+			lowerScript := strings.ToLower(script)
+			if strings.Contains(lowerScript, "sshd") {
+				if strings.Contains(script, " -p ") {
+					return cmdArgs
+				}
+				out := append([]string{}, cmdArgs...)
+				rewritten := script
+				if !strings.Contains(rewritten, " -e ") && !strings.HasSuffix(rewritten, " -e") {
+					rewritten += " -e"
+				}
+				rewritten += " -o " + listenArg + " -p " + portArg
+				out[2] = rewritten
+				return out
+			}
+		}
+	}
+	for _, arg := range cmdArgs {
+		if strings.Contains(strings.ToLower(arg), "sshd") {
+			out := append([]string{}, cmdArgs...)
+			if !hasArg(out, "-e") {
+				out = append(out, "-e")
+			}
+			out = append(out, "-o", listenArg, "-p", portArg)
+			return out
+		}
+	}
+	return cmdArgs
+}
+
+func applyNginxRuntimeCompatRootfs(rootfs string, listenPort int) error {
+	if strings.TrimSpace(rootfs) == "" || listenPort <= 0 {
+		return nil
+	}
+	paths := []string{
+		filepath.Join(rootfs, "etc", "nginx", "conf.d", "default.conf"),
+		filepath.Join(rootfs, "etc", "nginx", "http.d", "default.conf"),
+		filepath.Join(rootfs, "etc", "nginx", "nginx.conf"),
+	}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		rewritten := rewriteNginxListenConfig(string(b), listenPort)
+		if rewritten == string(b) {
+			continue
+		}
+		if err := os.WriteFile(p, []byte(rewritten), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rewriteNginxListenConfig(conf string, listenPort int) string {
+	if listenPort <= 0 {
+		return conf
+	}
+	port := strconv.Itoa(listenPort)
+	re := regexp.MustCompile(`(?m)^(\s*listen\s+)(\[::\]:)?80(\s+default_server)?;`)
+	return re.ReplaceAllString(conf, "${1}${2}"+port+"${3};")
+}
+
+func refreshNetworkAliasHosts(store *containerStore, containerID string) {
+	if store == nil || strings.TrimSpace(containerID) == "" {
+		return
+	}
+	for _, id := range store.containersSharingNetworks(containerID) {
+		c, ok := store.get(id)
+		if !ok || c == nil || !c.Running {
+			continue
+		}
+		_ = writeContainerIdentityFilesWithAliasesAndHosts(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID), c.ExtraHosts)
+	}
+}
+
+func writeNginxCompatConfig(rootfs string, listenPort int) error {
+	if strings.TrimSpace(rootfs) == "" || listenPort <= 0 {
+		return nil
+	}
+	p := filepath.Join(rootfs, "etc", "nginx", "nginx-sidewhale.conf")
+	content := fmt.Sprintf(`worker_processes auto;
+error_log /dev/stderr notice;
+pid /tmp/nginx.pid;
+events {
+  worker_connections 1024;
+}
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  access_log /dev/stdout;
+  sendfile on;
+  keepalive_timeout 65;
+  server {
+    listen %d;
+    listen [::]:%d;
+    server_name localhost;
+    location / {
+      root /usr/share/nginx/html;
+      index index.html index.htm;
+    }
+  }
+}
+`, listenPort, listenPort)
+	return os.WriteFile(p, []byte(content), 0o644)
+}
+
+func applyNginxRuntimeCompatCommand(cmdArgs []string, listenPort int) []string {
+	if listenPort <= 0 {
+		return cmdArgs
+	}
+	return []string{
+		"nginx",
+		"-g",
+		"daemon off;",
+		"-c",
+		"/etc/nginx/nginx-sidewhale.conf",
+	}
 }
 
 func usesTini(cmdArgs []string) bool {

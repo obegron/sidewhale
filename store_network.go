@@ -273,3 +273,27 @@ func (s *containerStore) peerAliasesForContainer(containerID string) []string {
 	sort.Strings(out)
 	return out
 }
+
+func (s *containerStore) containersSharingNetworks(containerID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureNetworksMapLocked()
+	ids := map[string]struct{}{}
+	for _, n := range s.networks {
+		if _, attached := n.Containers[containerID]; !attached {
+			continue
+		}
+		for peerID := range n.Containers {
+			if strings.TrimSpace(peerID) == "" {
+				continue
+			}
+			ids[peerID] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
