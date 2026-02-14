@@ -127,13 +127,21 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		return
 	}
 
+	runtimeImageRef := resolvedRef
+	if runtimeBackend == runtimeBackendK8s {
+		// In k8s backend, let kubelet resolve/pull original image references.
+		// This keeps image cache behavior native to Kubernetes and avoids
+		// sidewhale mirror rewrite prefixes leaking into Pod specs.
+		runtimeImageRef = req.Image
+	}
+
 	c := &Container{
 		ID:            id,
 		Name:          name,
 		Hostname:      hostname,
 		User:          firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
 		Image:         req.Image,
-		ResolvedImage: resolvedRef,
+		ResolvedImage: runtimeImageRef,
 		Rootfs:        rootfs,
 		Created:       time.Now().UTC(),
 		Running:       false,
@@ -146,6 +154,8 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		StdoutPath:    stdoutPath,
 		StderrPath:    stderrPath,
 		Cmd:           append(entrypoint, cmd...),
+		Entrypoint:    append([]string{}, entrypoint...),
+		Args:          append([]string{}, cmd...),
 		NetworkMode:   "bridge",
 		ExtraHosts:    normalizeExtraHosts(req.HostConfig.ExtraHosts),
 	}
@@ -222,7 +232,11 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		return
 	}
 	if limits.maxConcurrent > 0 {
+		// Reconcile runtime count from persisted container state to avoid
+		// stale in-memory counters producing false 409 conflicts.
+		currentRunning := store.runningCount()
 		m.mu.Lock()
+		m.running = currentRunning
 		if m.running >= limits.maxConcurrent {
 			m.mu.Unlock()
 			writeError(w, http.StatusConflict, "max concurrent containers reached")
@@ -287,6 +301,20 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		if podState.Running {
 			for cp := range c.Ports {
 				targets[cp] = fmt.Sprintf("%s:%d", podIP, cp)
+			}
+			if err := waitForPortTargets(r.Context(), targets, 90*time.Second); err != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				m.mu.Lock()
+				m.startFailures++
+				m.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+				return
 			}
 			store.stopProxies(c.ID)
 			proxies, err := startPortProxies(c.Ports, targets)
@@ -845,21 +873,6 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		writeError(w, http.StatusNotFound, "container not found")
 		return
 	}
-	if strings.TrimSpace(c.K8sPodName) != "" {
-		client, err := newInClusterK8sClient()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "log read failed")
-			return
-		}
-		logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "log read failed")
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
-		_, _ = w.Write(frameDockerRawStream(1, logs))
-		return
-	}
 	includeStdout := parseDockerBool(r.URL.Query().Get("stdout"), true)
 	includeStderr := parseDockerBool(r.URL.Query().Get("stderr"), true)
 	if !includeStdout && !includeStderr {
@@ -867,6 +880,55 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		return
 	}
 	follow := parseDockerBool(r.URL.Query().Get("follow"), false)
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		flusher, _ := w.(http.Flusher)
+		lastSize := 0
+		sendDelta := func(full []byte) {
+			if len(full) <= lastSize {
+				return
+			}
+			delta := full[lastSize:]
+			lastSize = len(full)
+			if includeStdout {
+				_, _ = w.Write(frameDockerRawStream(1, delta))
+			}
+			if includeStderr {
+				_, _ = w.Write(frameDockerRawStream(2, delta))
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		for {
+			logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
+			if err == nil {
+				sendDelta(logs)
+			}
+			if !follow {
+				return
+			}
+			current, ok := store.get(id)
+			if !ok || !current.Running {
+				// One last flush attempt after exit to avoid tail truncation.
+				logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
+				if err == nil {
+					sendDelta(logs)
+				}
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}
 	type logStream struct {
 		stream byte
 		file   *os.File

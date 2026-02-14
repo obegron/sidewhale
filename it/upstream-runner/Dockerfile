@@ -2,6 +2,8 @@ FROM eclipse-temurin:17-jdk-jammy
 
 ARG UPSTREAM_TC_REPO=https://github.com/testcontainers/testcontainers-java.git
 ARG UPSTREAM_TC_REF=
+ARG PRECOMPILE_TASKS=":testcontainers:testClasses :testcontainers-postgresql:testClasses"
+ARG PREWARM_DEPS=true
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -18,6 +20,22 @@ RUN git clone --depth=1 "$UPSTREAM_TC_REPO" /opt/testcontainers-java \
        git -C /opt/testcontainers-java fetch --depth=1 origin "$UPSTREAM_TC_REF" \
        && git -C /opt/testcontainers-java checkout --force FETCH_HEAD; \
      fi
+
+# Pre-warm Gradle distribution/cache and compile selected classes at image build time.
+ENV GRADLE_USER_HOME=/opt/gradle-home
+RUN mkdir -p "$GRADLE_USER_HOME" \
+  && if [ -n "$PRECOMPILE_TASKS" ]; then \
+       cd /opt/testcontainers-java \
+       && ./gradlew $PRECOMPILE_TASKS --no-daemon; \
+     fi
+
+# Resolve runtime dependencies needed by upstream postgres tests so the
+# in-cluster runner can execute in --offline mode without external DNS/egress.
+RUN if [ "$PREWARM_DEPS" = "true" ]; then \
+      cd /opt/testcontainers-java \
+      && ./gradlew :testcontainers:shadowJar :testcontainers-postgresql:testClasses --no-daemon \
+      && (./gradlew :testcontainers-postgresql:test --tests org.testcontainers.__none__ --no-daemon || true); \
+    fi
 
 WORKDIR /workspace
 

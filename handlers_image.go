@@ -65,6 +65,10 @@ func handleImagesCreate(w http.ResponseWriter, r *http.Request, store *container
 	}
 
 	writeStatus("Pulling from " + resolvedRef)
+	if cfg.runtimeBackend == runtimeBackendK8s {
+		writeStatus("Status: Image is up to date for " + ref)
+		return
+	}
 	if _, meta, pulledRef, err := ensureImageWithFallback(
 		r.Context(),
 		resolvedRef,

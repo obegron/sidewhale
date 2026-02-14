@@ -72,6 +72,34 @@ func TestHandleImagesCreateStreamsError(t *testing.T) {
 	}
 }
 
+func TestHandleImagesCreateK8sBackendNoOp(t *testing.T) {
+	store := &containerStore{stateDir: t.TempDir()}
+	cfg := appConfig{runtimeBackend: runtimeBackendK8s}
+	ensureCalled := false
+	ensure := func(_ context.Context, _ string, _ string, _ *metrics, _ bool) (string, imageMeta, error) {
+		ensureCalled = true
+		return "/tmp/rootfs", imageMeta{Digest: "sha256:abc"}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/images/create?fromImage=postgres:9.6.12", nil)
+	rec := httptest.NewRecorder()
+	handleImagesCreate(rec, req, store, &metrics{}, cfg, ensure)
+
+	if ensureCalled {
+		t.Fatalf("ensure should not be called in k8s backend")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"Pulling from postgres:9.6.12"`) {
+		t.Fatalf("missing pull status line: %s", body)
+	}
+	if !strings.Contains(body, `"status":"Status: Image is up to date for postgres:9.6.12"`) {
+		t.Fatalf("missing no-op status line: %s", body)
+	}
+}
+
 func TestHandleImagesCreateDigestTagUsesAtSeparator(t *testing.T) {
 	store := &containerStore{stateDir: t.TempDir()}
 	cfg := appConfig{}

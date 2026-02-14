@@ -41,6 +41,8 @@ help:
 	@echo "  K8S_UPSTREAM_REF Optional branch/tag/SHA baked into runner image"
 	@echo "  K8S_UPSTREAM_TASK Gradle task for in-cluster runner"
 	@echo "  K8S_UPSTREAM_TEST_ARGS Test args for in-cluster runner"
+	@echo "  K8S_UPSTREAM_PRECOMPILE_TASKS Gradle tasks precompiled in runner image"
+	@echo "  K8S_UPSTREAM_PREWARM_DEPS Resolve runner deps at image build for offline runs"
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -87,6 +89,8 @@ K8S_UPSTREAM_TASK ?= :testcontainers:test
 K8S_UPSTREAM_TEST_ARGS ?= --tests org.testcontainers.containers.ContainerStateTest
 K8S_UPSTREAM_EXTRA_GRADLE_ARGS ?= --rerun-tasks --max-workers=1 --no-daemon
 K8S_SIDEWHALE_DOCKER_HOST ?=
+K8S_UPSTREAM_PRECOMPILE_TASKS ?= :testcontainers:testClasses :testcontainers-postgresql:testClasses
+K8S_UPSTREAM_PREWARM_DEPS ?= true
 
 smoke-pull:
 	@set -euo pipefail; \
@@ -190,6 +194,8 @@ integration-test-upstream-k8s-image:
 	docker build \
 		--build-arg UPSTREAM_TC_REPO=$(K8S_UPSTREAM_REPO) \
 		--build-arg UPSTREAM_TC_REF=$(K8S_UPSTREAM_REF) \
+		--build-arg PRECOMPILE_TASKS="$(K8S_UPSTREAM_PRECOMPILE_TASKS)" \
+		--build-arg PREWARM_DEPS=$(K8S_UPSTREAM_PREWARM_DEPS) \
 		-t $(K8S_UPSTREAM_RUNNER_IMAGE):$(K8S_UPSTREAM_RUNNER_TAG) \
 		-f it/upstream-runner/Dockerfile it/upstream-runner
 	k3d image import $(K8S_UPSTREAM_RUNNER_IMAGE):$(K8S_UPSTREAM_RUNNER_TAG) -c $(K8S_CLUSTER_NAME)

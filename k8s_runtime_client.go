@@ -126,7 +126,14 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container) (string, error)
 		return "", fmt.Errorf("missing image")
 	}
 	podName := "sidewhale-" + c.ID
-	cmd := append([]string{}, c.Cmd...)
+	entrypoint := append([]string{}, c.Entrypoint...)
+	args := append([]string{}, c.Args...)
+	if len(entrypoint) == 0 && len(args) == 0 {
+		// Backward compatibility for containers created before Entrypoint/Args
+		// fields existed. Prefer preserving image ENTRYPOINT semantics by
+		// treating legacy Cmd as args.
+		args = append([]string{}, c.Cmd...)
+	}
 	env := make([]map[string]string, 0, len(c.Env))
 	for _, item := range c.Env {
 		key, val, ok := strings.Cut(item, "=")
@@ -144,8 +151,11 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container) (string, error)
 		"imagePullPolicy": "IfNotPresent",
 		"env":             env,
 	}
-	if len(cmd) > 0 {
-		containerSpec["command"] = cmd
+	if len(entrypoint) > 0 {
+		containerSpec["command"] = entrypoint
+	}
+	if len(args) > 0 {
+		containerSpec["args"] = args
 	}
 	if wd := strings.TrimSpace(c.WorkingDir); wd != "" {
 		containerSpec["workingDir"] = wd

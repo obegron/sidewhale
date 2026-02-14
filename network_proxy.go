@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -160,6 +161,43 @@ func startPortProxies(ports map[int]int, targets map[int]string) ([]*portProxy, 
 		proxies = append(proxies, proxy)
 	}
 	return proxies, nil
+}
+
+func waitForPortTargets(ctx context.Context, targets map[int]string, timeout time.Duration) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for containerPort, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		var lastErr error
+		for {
+			dialer := net.Dialer{Timeout: 750 * time.Millisecond}
+			conn, err := dialer.DialContext(ctx, "tcp", target)
+			if err == nil {
+				_ = conn.Close()
+				break
+			}
+			lastErr = err
+			if ctx != nil && ctx.Err() != nil {
+				return fmt.Errorf("wait for port %d canceled: %w", containerPort, ctx.Err())
+			}
+			if time.Now().After(deadline) {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("timeout")
+				}
+				return fmt.Errorf("wait for port %d on %s failed: %w", containerPort, target, lastErr)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 func startPortProxy(hostPort, containerPort int, target string) (*portProxy, error) {

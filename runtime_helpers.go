@@ -80,6 +80,10 @@ func requestTimeoutFor(r *http.Request) time.Duration {
 	if r.Method == http.MethodPost && path == "/containers/create" {
 		return 10 * time.Minute
 	}
+	// Container start can take time in k8s backend while pod is scheduled/pulled.
+	if r.Method == http.MethodPost && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/start") {
+		return 10 * time.Minute
+	}
 	// Docker clients may keep log follow streams open for long periods.
 	if r.Method == http.MethodGet && strings.HasSuffix(path, "/logs") && parseDockerBool(r.URL.Query().Get("follow"), false) {
 		return 0

@@ -143,6 +143,18 @@ func (s *containerStore) listContainerIDs() []string {
 	return out
 }
 
+func (s *containerStore) runningCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, c := range s.containers {
+		if c != nil && c.Running {
+			count++
+		}
+	}
+	return count
+}
+
 func normalizeContainerName(raw string) string {
 	return strings.TrimPrefix(strings.TrimSpace(raw), "/")
 }

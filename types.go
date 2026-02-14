@@ -28,6 +28,8 @@ type Container struct {
 	StderrPath    string              `json:"StderrPath,omitempty"`
 	Pid           int                 `json:"Pid"`
 	Cmd           []string            `json:"Cmd"`
+	Entrypoint    []string            `json:"Entrypoint,omitempty"`
+	Args          []string            `json:"Args,omitempty"`
 	WorkingDir    string              `json:"WorkingDir"`
 	LoopbackIP    string              `json:"LoopbackIP,omitempty"`
 	NetworkMode   string              `json:"NetworkMode,omitempty"`
