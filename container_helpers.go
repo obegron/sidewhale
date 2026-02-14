@@ -209,6 +209,11 @@ func isRedisImage(image string) bool {
 	return strings.Contains(image, "redis")
 }
 
+func isLLdapImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "lldap/lldap")
+}
+
 func dockerHostForInnerClients(unixSocketPath, requestHost string) string {
 	if strings.TrimSpace(unixSocketPath) != "" {
 		return "unix://" + unixSocketPath

@@ -165,6 +165,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		cmdArgs = []string{"sleep", "3600"}
 	}
 	cmdArgs = resolveCommandInRootfs(c.Rootfs, c.Env, cmdArgs)
+	runtimeEnv := append([]string{}, c.Env...)
 	runtimeTargets := clonePortTargets(c.PortTargets)
 	if isRedisImage(c.Image) {
 		if strings.TrimSpace(c.LoopbackIP) == "" {
@@ -184,6 +185,26 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		}
 		cmdArgs = applyRedisRuntimeCompat(cmdArgs, c.LoopbackIP)
 		runtimeTargets[6379] = c.LoopbackIP + ":6379"
+	}
+	if isLLdapImage(c.Image) {
+		if strings.TrimSpace(c.LoopbackIP) == "" {
+			ip, allocErr := store.allocateLoopbackIP()
+			if allocErr != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
+				return
+			}
+			c.LoopbackIP = ip
+		}
+		runtimeEnv = applyLLdapRuntimeCompatEnv(runtimeEnv, c.LoopbackIP)
+		runtimeTargets[3890] = c.LoopbackIP + ":3890"
+		runtimeTargets[17170] = c.LoopbackIP + ":17170"
 	}
 
 	socketBinds, err := dockerSocketBindsForContainer(c, unixSocketPathFromContainerEnv(c.Env))
@@ -213,7 +234,8 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	}
 	cmd.Dir = "/"
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = deduplicateEnv(append(os.Environ(), c.Env...))
+	runtimeEnv = applyTiniRuntimeCompatEnv(runtimeEnv, cmdArgs)
+	cmd.Env = deduplicateEnv(append(os.Environ(), runtimeEnv...))
 
 	logFile, err := os.OpenFile(c.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -766,6 +788,37 @@ func applyRedisRuntimeCompat(cmdArgs []string, loopbackIP string) []string {
 func hasArg(args []string, needle string) bool {
 	for _, arg := range args {
 		if arg == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func applyTiniRuntimeCompatEnv(env, cmdArgs []string) []string {
+	if !usesTini(cmdArgs) || hasArg(cmdArgs, "-s") || envHasKey(env, "TINI_SUBREAPER") {
+		return env
+	}
+	out := append([]string{}, env...)
+	out = append(out, "TINI_SUBREAPER=1")
+	return out
+}
+
+func applyLLdapRuntimeCompatEnv(env []string, loopbackIP string) []string {
+	ip := strings.TrimSpace(loopbackIP)
+	if ip == "" {
+		return env
+	}
+	defaults := []string{
+		"LLDAP_LDAP_HOST=" + ip,
+		"LLDAP_HTTP_HOST=" + ip,
+	}
+	return mergeEnv(defaults, env)
+}
+
+func usesTini(cmdArgs []string) bool {
+	for _, arg := range cmdArgs {
+		base := strings.ToLower(filepath.Base(strings.TrimSpace(arg)))
+		if base == "tini" || base == "tini-static" {
 			return true
 		}
 	}
