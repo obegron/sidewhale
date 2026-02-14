@@ -91,6 +91,66 @@ func TestHandleImagesCreateDigestTagUsesAtSeparator(t *testing.T) {
 	}
 }
 
+func TestHandleImagesCreateDigestMirrorFallbackToOriginal(t *testing.T) {
+	store := &containerStore{stateDir: t.TempDir()}
+	cfg := appConfig{
+		mirrorRules: []imageMirrorRule{
+			{FromPrefix: "docker.io/", ToPrefix: "127.0.0.1:5001/"},
+		},
+	}
+	var calls []string
+	ensure := func(_ context.Context, ref string, _ string, _ *metrics, _ bool) (string, imageMeta, error) {
+		calls = append(calls, ref)
+		if strings.HasPrefix(ref, "127.0.0.1:5001/") {
+			return "", imageMeta{}, errors.New("image pull failed: MANIFEST_UNKNOWN")
+		}
+		return "/tmp/rootfs", imageMeta{Digest: "sha256:ok"}, nil
+	}
+
+	ref := "docker.io/testcontainers/ryuk@sha256:bcbee39cd601396958ba1bd06ea14ad64ce0ea709de29a427d741d1f5262080a"
+	req := httptest.NewRequest(http.MethodPost, "/images/create?fromImage="+ref, nil)
+	rec := httptest.NewRecorder()
+	handleImagesCreate(rec, req, store, &metrics{}, cfg, ensure)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(calls) != 2 {
+		t.Fatalf("ensure call count = %d, want 2 (%v)", len(calls), calls)
+	}
+	if calls[0] != "127.0.0.1:5001/testcontainers/ryuk@sha256:bcbee39cd601396958ba1bd06ea14ad64ce0ea709de29a427d741d1f5262080a" {
+		t.Fatalf("first ensure call = %q", calls[0])
+	}
+	if calls[1] != ref {
+		t.Fatalf("second ensure call = %q, want %q", calls[1], ref)
+	}
+}
+
+func TestHandleImagesCreateNonDigestDoesNotFallbackOnMirrorMiss(t *testing.T) {
+	store := &containerStore{stateDir: t.TempDir()}
+	cfg := appConfig{
+		mirrorRules: []imageMirrorRule{
+			{FromPrefix: "docker.io/", ToPrefix: "127.0.0.1:5001/"},
+		},
+	}
+	var calls []string
+	ensure := func(_ context.Context, ref string, _ string, _ *metrics, _ bool) (string, imageMeta, error) {
+		calls = append(calls, ref)
+		return "", imageMeta{}, errors.New("image pull failed: MANIFEST_UNKNOWN")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/images/create?fromImage=docker.io/library/registry:2.7.0", nil)
+	rec := httptest.NewRecorder()
+	handleImagesCreate(rec, req, store, &metrics{}, cfg, ensure)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(calls) != 1 {
+		t.Fatalf("ensure call count = %d, want 1 (%v)", len(calls), calls)
+	}
+}
+
 func TestImageTagLooksLikeDigest(t *testing.T) {
 	tests := []struct {
 		tag  string
@@ -129,6 +189,18 @@ func TestHandleImageInspectFindsMirroredReference(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(imageDir, "image.json"), data, 0o644); err != nil {
 		t.Fatalf("write image metadata: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(imageDir, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "rootfs", "marker"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(imageDir, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "rootfs", "marker"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/images/testcontainers%2Fhelloworld:latest/json", nil)
 	rec := httptest.NewRecorder()
@@ -144,5 +216,113 @@ func TestHandleImageInspectFindsMirroredReference(t *testing.T) {
 	}
 	if payload["Id"] != "sha256:deadbeef" {
 		t.Fatalf("Id = %v, want sha256:deadbeef", payload["Id"])
+	}
+}
+
+func TestHandleImageTagByDigest(t *testing.T) {
+	stateDir := t.TempDir()
+	imageDir := filepath.Join(stateDir, "images", "sha256_deadbeef")
+	if err := os.MkdirAll(imageDir, 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	meta := imageMeta{
+		Reference: "127.0.0.1:5001/library/alpine:latest",
+		Digest:    "sha256:deadbeef",
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "image.json"), data, 0o644); err != nil {
+		t.Fatalf("write image metadata: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(imageDir, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "rootfs", "marker"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/images/sha256:deadbeef/tag?repo=example.local/test&tag=abc", nil)
+	rec := httptest.NewRecorder()
+	handleImageTag(rec, req, stateDir, nil, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	inspectReq := httptest.NewRequest(http.MethodGet, "/images/example.local%2Ftest:abc/json", nil)
+	inspectRec := httptest.NewRecorder()
+	handleImageInspect(inspectRec, inspectReq, stateDir, nil)
+	if inspectRec.Code != http.StatusOK {
+		t.Fatalf("inspect status = %d, want %d body=%s", inspectRec.Code, http.StatusOK, inspectRec.Body.String())
+	}
+}
+
+func TestHandleImageTagNotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/images/missing:latest/tag?repo=example.local/test&tag=abc", nil)
+	rec := httptest.NewRecorder()
+	handleImageTag(rec, req, t.TempDir(), nil, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestHandleImagePushSuccess(t *testing.T) {
+	stateDir := t.TempDir()
+	imageDir := filepath.Join(stateDir, "images", "sha256_deadbeef")
+	if err := os.MkdirAll(imageDir, 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	meta := imageMeta{
+		Reference: "example.local/test:abc",
+		Digest:    "sha256:deadbeef",
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "image.json"), data, 0o644); err != nil {
+		t.Fatalf("write image metadata: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(imageDir, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/images/example.local%2Ftest/push?tag=abc", nil)
+	rec := httptest.NewRecorder()
+	handleImagePush(rec, req, stateDir, nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"Pushed"`) {
+		t.Fatalf("missing pushed status: %s", rec.Body.String())
+	}
+}
+
+func TestHandleImageDeleteByReference(t *testing.T) {
+	stateDir := t.TempDir()
+	imageDir := filepath.Join(stateDir, "images", "sha256_deadbeef")
+	if err := os.MkdirAll(imageDir, 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	meta := imageMeta{
+		Reference: "example.local/test:abc",
+		Digest:    "sha256:deadbeef",
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "image.json"), data, 0o644); err != nil {
+		t.Fatalf("write image metadata: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(imageDir, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/images/example.local%2Ftest:abc", nil)
+	rec := httptest.NewRecorder()
+	handleImageDelete(rec, req, stateDir, nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }

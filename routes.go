@@ -62,7 +62,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 	})
 	mux.HandleFunc("/images/prune", handleImagesPrune)
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
-		handleImageInspect(w, r, store.stateDir, cfg.mirrorRules)
+		handleImageSubresource(w, r, store.stateDir, cfg.mirrorRules, cfg.enableImageMutations)
 	})
 	mux.HandleFunc("/images/json", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -160,6 +160,10 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			case http.MethodGet:
 				handleArchiveGet(w, r, store, id)
 			case http.MethodPut:
+				if !cfg.enableArchiveUpload {
+					writeError(w, http.StatusNotFound, "not found")
+					return
+				}
 				handleArchivePut(w, r, store, id)
 			default:
 				writeError(w, http.StatusNotFound, "not found")

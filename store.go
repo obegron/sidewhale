@@ -76,11 +76,22 @@ func (s *containerStore) get(id string) (*Container, bool) {
 }
 
 func (s *containerStore) markStopped(id string) {
+	finishedAt := time.Now().UTC()
+	s.markStoppedWithExit(id, nil, finishedAt)
+}
+
+func (s *containerStore) markStoppedWithExit(id string, exitCode *int, finishedAt time.Time) {
 	s.mu.Lock()
 	c, ok := s.containers[id]
 	if ok {
 		c.Running = false
 		c.Pid = 0
+		if exitCode != nil {
+			c.ExitCode = *exitCode
+		}
+		if !finishedAt.IsZero() {
+			c.FinishedAt = finishedAt
+		}
 		_ = s.saveLocked(c)
 	}
 	s.mu.Unlock()

@@ -7,22 +7,26 @@ import (
 )
 
 type Container struct {
-	ID         string    `json:"Id"`
-	Name       string    `json:"Name,omitempty"`
-	Hostname   string    `json:"Hostname,omitempty"`
-	User       string    `json:"User,omitempty"`
-	Image      string    `json:"Image"`
-	Rootfs     string    `json:"Rootfs"`
-	Created    time.Time `json:"Created"`
-	Running    bool      `json:"Running"`
-	Ports      map[int]int
-	Env        []string `json:"Env"`
-	LogPath    string   `json:"LogPath"`
-	StdoutPath string   `json:"StdoutPath,omitempty"`
-	StderrPath string   `json:"StderrPath,omitempty"`
-	Pid        int      `json:"Pid"`
-	Cmd        []string `json:"Cmd"`
-	WorkingDir string   `json:"WorkingDir"`
+	ID           string    `json:"Id"`
+	Name         string    `json:"Name,omitempty"`
+	Hostname     string    `json:"Hostname,omitempty"`
+	User         string    `json:"User,omitempty"`
+	Image        string    `json:"Image"`
+	Rootfs       string    `json:"Rootfs"`
+	Created      time.Time `json:"Created"`
+	StartedAt    time.Time `json:"StartedAt,omitempty"`
+	FinishedAt   time.Time `json:"FinishedAt,omitempty"`
+	Running      bool      `json:"Running"`
+	ExitCode     int       `json:"ExitCode"`
+	Ports        map[int]int
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	Env          []string            `json:"Env"`
+	LogPath      string              `json:"LogPath"`
+	StdoutPath   string              `json:"StdoutPath,omitempty"`
+	StderrPath   string              `json:"StderrPath,omitempty"`
+	Pid          int                 `json:"Pid"`
+	Cmd          []string            `json:"Cmd"`
+	WorkingDir   string              `json:"WorkingDir"`
 }
 
 type containerStore struct {

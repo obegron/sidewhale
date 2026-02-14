@@ -151,3 +151,56 @@ func TestHandleJSONIncludesPausedState(t *testing.T) {
 		t.Fatalf("inspect response missing Config.ExposedPorts: %s", body)
 	}
 }
+
+func TestHandleJSONKeepsAllExposedPortsWhenOnlySubsetPublished(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{
+			"abc123": {
+				ID: "abc123",
+				ExposedPorts: map[string]struct{}{
+					"8080/tcp": {},
+					"8081/tcp": {},
+				},
+				Ports: map[int]int{
+					8080: 32768,
+				},
+				Created: time.Now().UTC(),
+			},
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://example.local", nil)
+	handleJSON(rr, req, store, "abc123")
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("inspect payload invalid json: %v", err)
+	}
+	config, ok := payload["Config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("inspect response Config missing or wrong type: %s", rr.Body.String())
+	}
+	exposed, ok := config["ExposedPorts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Config.ExposedPorts missing or wrong type: %s", rr.Body.String())
+	}
+	if _, ok := exposed["8080/tcp"]; !ok {
+		t.Fatalf("missing exposed 8080/tcp: %s", rr.Body.String())
+	}
+	if _, ok := exposed["8081/tcp"]; !ok {
+		t.Fatalf("missing exposed 8081/tcp: %s", rr.Body.String())
+	}
+	hostConfig, ok := payload["HostConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("inspect response HostConfig missing or wrong type: %s", rr.Body.String())
+	}
+	portBindings, ok := hostConfig["PortBindings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("HostConfig.PortBindings missing or wrong type: %s", rr.Body.String())
+	}
+	if _, ok := portBindings["8080/tcp"]; !ok {
+		t.Fatalf("missing published 8080/tcp binding: %s", rr.Body.String())
+	}
+	if _, ok := portBindings["8081/tcp"]; ok {
+		t.Fatalf("unexpected published 8081/tcp binding: %s", rr.Body.String())
+	}
+}

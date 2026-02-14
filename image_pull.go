@@ -21,6 +21,9 @@ var imagePullLocks sync.Map
 
 func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, trustInsecure bool) (string, imageMeta, error) {
 	ref = strings.TrimSpace(ref)
+	if rec, ok, err := findImageRecordByReferenceOrDigest(stateDir, []string{ref}, []string{ref}); err == nil && ok {
+		return rec.rootfsDir, rec.meta, nil
+	}
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
 		return "", imageMeta{}, fmt.Errorf("invalid image reference: %w", err)
@@ -130,6 +133,70 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 		m.mu.Unlock()
 	}
 	return rootfsDir, meta, nil
+}
+
+func ensureImageWithFallback(
+	ctx context.Context,
+	primaryRef string,
+	fallbackRef string,
+	stateDir string,
+	m *metrics,
+	trustInsecure bool,
+	ensure func(context.Context, string, string, *metrics, bool) (string, imageMeta, error),
+) (string, imageMeta, string, error) {
+	candidates := uniqueImageRefs(primaryRef, fallbackRef)
+	if len(candidates) == 0 {
+		return "", imageMeta{}, "", fmt.Errorf("missing image reference")
+	}
+	var lastErr error
+	for i, candidate := range candidates {
+		rootfs, meta, err := ensure(ctx, candidate, stateDir, m, trustInsecure)
+		if err == nil {
+			return rootfs, meta, candidate, nil
+		}
+		lastErr = err
+		if i == 0 && len(candidates) > 1 && shouldFallbackAfterMirrorDigestMiss(candidates[0], candidates[1], err) {
+			continue
+		}
+		return "", imageMeta{}, "", err
+	}
+	return "", imageMeta{}, "", lastErr
+}
+
+func uniqueImageRefs(refs ...string) []string {
+	out := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func shouldFallbackAfterMirrorDigestMiss(primaryRef string, fallbackRef string, err error) bool {
+	if strings.TrimSpace(primaryRef) == "" || strings.TrimSpace(fallbackRef) == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(primaryRef), strings.TrimSpace(fallbackRef)) {
+		return false
+	}
+	if !isDigestImageReference(primaryRef) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "manifest_unknown") || strings.Contains(msg, "manifest unknown")
+}
+
+func isDigestImageReference(ref string) bool {
+	ref = strings.TrimSpace(strings.ToLower(ref))
+	return strings.Contains(ref, "@sha256:")
 }
 
 func acquireImagePullLock(key string) *sync.Mutex {

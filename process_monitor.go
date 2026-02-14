@@ -36,14 +36,16 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 		if limits.maxRuntime > 0 && time.Now().After(deadline) {
 			fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_runtime limit=%s\n", id, pid, limits.maxRuntime)
 			_ = killProcessGroup(pid, syscall.SIGKILL)
-			store.markStopped(id)
+			exitCode := 137
+			store.markStoppedWithExit(id, &exitCode, time.Now().UTC())
 			return
 		}
 		if limits.maxLogBytes > 0 {
 			if info, err := os.Stat(logPath); err == nil && info.Size() > limits.maxLogBytes {
 				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_log_bytes size=%d limit=%d\n", id, pid, info.Size(), limits.maxLogBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
-				store.markStopped(id)
+				exitCode := 137
+				store.markStoppedWithExit(id, &exitCode, time.Now().UTC())
 				return
 			}
 		}
@@ -51,7 +53,8 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 			if rss, err := readRSS(pid); err == nil && rss > limits.maxMemBytes {
 				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_mem_bytes rss=%d limit=%d\n", id, pid, rss, limits.maxMemBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
-				store.markStopped(id)
+				exitCode := 137
+				store.markStoppedWithExit(id, &exitCode, time.Now().UTC())
 				return
 			}
 		}
@@ -59,7 +62,8 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 			if size, err := dirSize(containerDir); err == nil && size > limits.maxDiskBytes {
 				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=max_disk_bytes size=%d limit=%d\n", id, pid, size, limits.maxDiskBytes)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
-				store.markStopped(id)
+				exitCode := 137
+				store.markStoppedWithExit(id, &exitCode, time.Now().UTC())
 				return
 			}
 		}
@@ -70,7 +74,8 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 			if matched {
 				fmt.Printf("sidewhale: monitor killed container id=%s pid=%d reason=fatal_log signature=%q\n", id, pid, sig)
 				_ = killProcessGroup(pid, syscall.SIGKILL)
-				store.markStopped(id)
+				exitCode := 137
+				store.markStoppedWithExit(id, &exitCode, time.Now().UTC())
 				return
 			}
 		}

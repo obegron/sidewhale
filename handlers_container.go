@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,7 +36,15 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		return
 	}
 
-	imageRootfs, meta, err := ensureImage(r.Context(), resolvedRef, store.stateDir, nil, trustInsecure)
+	imageRootfs, meta, _, err := ensureImageWithFallback(
+		r.Context(),
+		resolvedRef,
+		req.Image,
+		store.stateDir,
+		nil,
+		trustInsecure,
+		ensureImage,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -96,28 +105,30 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 	}
 
 	allExposed := mergeExposedPorts(meta.ExposedPorts, req.ExposedPorts)
-	ports, err := resolvePortBindings(allExposed, req.HostConfig.PortBindings)
+	ports, err := resolvePortBindings(allExposed, req.ExposedPorts, req.HostConfig.PortBindings)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	c := &Container{
-		ID:         id,
-		Name:       name,
-		Hostname:   hostname,
-		User:       firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
-		Image:      req.Image,
-		Rootfs:     rootfs,
-		Created:    time.Now().UTC(),
-		Running:    false,
-		Ports:      ports,
-		Env:        env,
-		WorkingDir: workingDir,
-		LogPath:    logPath,
-		StdoutPath: stdoutPath,
-		StderrPath: stderrPath,
-		Cmd:        append(entrypoint, cmd...),
+		ID:           id,
+		Name:         name,
+		Hostname:     hostname,
+		User:         firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
+		Image:        req.Image,
+		Rootfs:       rootfs,
+		Created:      time.Now().UTC(),
+		Running:      false,
+		ExitCode:     0,
+		Ports:        ports,
+		ExposedPorts: allExposed,
+		Env:          env,
+		WorkingDir:   workingDir,
+		LogPath:      logPath,
+		StdoutPath:   stdoutPath,
+		StderrPath:   stderrPath,
+		Cmd:          append(entrypoint, cmd...),
 	}
 
 	if err := store.save(c); err != nil {
@@ -272,6 +283,9 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 
 	c.Running = true
 	c.Pid = cmd.Process.Pid
+	c.ExitCode = 0
+	c.StartedAt = time.Now().UTC()
+	c.FinishedAt = time.Time{}
 	if err := store.save(c); err != nil {
 		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		store.stopProxies(c.ID)
@@ -290,10 +304,20 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	startedAt := time.Now()
 
 	go func() {
-		_ = cmd.Wait()
+		waitErr := cmd.Wait()
+		exitCode := 0
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = 126
+			}
+		}
 		closeLogs()
 		store.stopProxies(c.ID)
-		store.markStopped(c.ID)
+		finishedAt := time.Now().UTC()
+		store.markStoppedWithExit(c.ID, &exitCode, finishedAt)
 		m.mu.Lock()
 		if m.running > 0 {
 			m.running--
@@ -320,7 +344,8 @@ func handleStop(w http.ResponseWriter, r *http.Request, store *containerStore, i
 
 	terminateProcessTree(c.Pid, 2*time.Second)
 	store.stopProxies(c.ID)
-	store.markStopped(c.ID)
+	exitCode := 137
+	store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -336,7 +361,8 @@ func handleKill(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	}
 	terminateProcessTree(c.Pid, 0)
 	store.stopProxies(c.ID)
-	store.markStopped(c.ID)
+	exitCode := 137
+	store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -349,7 +375,8 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 	if c.Running {
 		terminateProcessTree(c.Pid, 2*time.Second)
 		store.stopProxies(c.ID)
-		store.markStopped(c.ID)
+		exitCode := 137
+		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	}
 
 	_ = os.RemoveAll(filepath.Dir(c.Rootfs))
@@ -371,9 +398,12 @@ func handleJSON(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		writeError(w, http.StatusNotFound, "container not found")
 		return
 	}
-	exposed := make(map[string]struct{}, len(c.Ports))
-	for internal := range c.Ports {
-		exposed[fmt.Sprintf("%d/tcp", internal)] = struct{}{}
+	exposed := c.ExposedPorts
+	if len(exposed) == 0 {
+		exposed = make(map[string]struct{}, len(c.Ports))
+		for internal := range c.Ports {
+			exposed[fmt.Sprintf("%d/tcp", internal)] = struct{}{}
+		}
 	}
 	path := firstArg(c.Cmd)
 	args := restArgs(c.Cmd)
@@ -391,10 +421,10 @@ func handleJSON(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			"OOMKilled":  false,
 			"Dead":       false,
 			"Pid":        c.Pid,
-			"ExitCode":   0,
+			"ExitCode":   c.ExitCode,
 			"Error":      "",
-			"StartedAt":  c.Created.Format(time.RFC3339Nano),
-			"FinishedAt": c.Created.Format(time.RFC3339Nano),
+			"StartedAt":  containerStartedAt(c).Format(time.RFC3339Nano),
+			"FinishedAt": containerFinishedAt(c).Format(time.RFC3339Nano),
 		},
 		"Config": map[string]interface{}{
 			"Hostname":     c.Hostname,
@@ -650,7 +680,11 @@ func handleWait(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			c, _ = store.get(id)
 		}
 		if c == nil || !c.Running {
-			writeJSON(w, http.StatusOK, map[string]interface{}{"StatusCode": 0, "Error": nil})
+			exitCode := 0
+			if c != nil {
+				exitCode = c.ExitCode
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"StatusCode": exitCode, "Error": nil})
 			return
 		}
 
@@ -660,4 +694,30 @@ func handleWait(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		case <-ticker.C:
 		}
 	}
+}
+
+func containerStartedAt(c *Container) time.Time {
+	if c != nil && !c.StartedAt.IsZero() {
+		return c.StartedAt
+	}
+	if c != nil && !c.Created.IsZero() {
+		return c.Created
+	}
+	return time.Time{}
+}
+
+func containerFinishedAt(c *Container) time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	if c.Running {
+		return time.Time{}
+	}
+	if !c.FinishedAt.IsZero() {
+		return c.FinishedAt
+	}
+	if !c.Created.IsZero() {
+		return c.Created
+	}
+	return time.Time{}
 }

@@ -42,19 +42,26 @@ func parsePort(port string) (int, error) {
 	return p, nil
 }
 
-func resolvePortBindings(exposedPorts map[string]struct{}, hostBindings map[string][]portBinding) (map[int]int, error) {
+func resolvePortBindings(exposedPorts map[string]struct{}, requestedExposed map[string]struct{}, hostBindings map[string][]portBinding) (map[int]int, error) {
 	ports := map[int]int{}
-	for port := range exposedPorts {
-		cp, err := parsePort(port)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := ports[cp]; !ok {
-			hp, err := allocatePort()
+	published := map[int]struct{}{}
+
+	if len(requestedExposed) == 0 && len(hostBindings) == 0 {
+		// Backward-compatible default: publish all EXPOSEd image ports when no explicit publish list exists.
+		for port := range exposedPorts {
+			cp, err := parsePort(port)
 			if err != nil {
 				return nil, err
 			}
-			ports[cp] = hp
+			published[cp] = struct{}{}
+		}
+	} else {
+		for port := range requestedExposed {
+			cp, err := parsePort(port)
+			if err != nil {
+				return nil, err
+			}
+			published[cp] = struct{}{}
 		}
 	}
 	for port, bindings := range hostBindings {
@@ -82,6 +89,17 @@ func resolvePortBindings(exposedPorts map[string]struct{}, hostBindings map[stri
 			hostPort = hp
 		}
 		ports[cp] = hostPort
+		published[cp] = struct{}{}
+	}
+	for cp := range published {
+		if _, ok := ports[cp]; ok {
+			continue
+		}
+		hp, err := allocatePort()
+		if err != nil {
+			return nil, err
+		}
+		ports[cp] = hp
 	}
 	return ports, nil
 }

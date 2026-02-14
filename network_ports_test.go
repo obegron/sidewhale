@@ -91,7 +91,7 @@ func TestResolvePortBindingsHonorsExplicitHostPort(t *testing.T) {
 			{HostPort: "15432"},
 		},
 	}
-	got, err := resolvePortBindings(exposed, hostBindings)
+	got, err := resolvePortBindings(exposed, nil, hostBindings)
 	if err != nil {
 		t.Fatalf("resolvePortBindings error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestResolvePortBindingsAllocatesWhenHostPortMissing(t *testing.T) {
 	exposed := map[string]struct{}{
 		"6379/tcp": {},
 	}
-	got, err := resolvePortBindings(exposed, nil)
+	got, err := resolvePortBindings(exposed, nil, nil)
 	if err != nil {
 		t.Fatalf("resolvePortBindings error: %v", err)
 	}
@@ -122,8 +122,31 @@ func TestResolvePortBindingsRejectsInvalidHostPort(t *testing.T) {
 			{HostPort: "not-a-port"},
 		},
 	}
-	_, err := resolvePortBindings(exposed, hostBindings)
+	_, err := resolvePortBindings(exposed, nil, hostBindings)
 	if err == nil {
 		t.Fatalf("expected invalid host port error, got nil")
+	}
+}
+
+func TestResolvePortBindingsOnlyPublishesRequestedPorts(t *testing.T) {
+	exposed := map[string]struct{}{
+		"8080/tcp": {},
+		"8081/tcp": {},
+	}
+	requested := map[string]struct{}{
+		"8080/tcp": {},
+	}
+	got, err := resolvePortBindings(exposed, requested, nil)
+	if err != nil {
+		t.Fatalf("resolvePortBindings error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("resolvePortBindings published %d ports, want 1", len(got))
+	}
+	if got[8080] == 0 {
+		t.Fatalf("expected published host port for 8080")
+	}
+	if _, ok := got[8081]; ok {
+		t.Fatalf("expected 8081 to be unbound, got %#v", got)
 	}
 }

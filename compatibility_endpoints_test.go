@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -100,5 +101,41 @@ func TestPruneEndpointsReturnDockerShape(t *testing.T) {
 				t.Fatalf("POST %s payload missing key %q: %s", tt.path, key, rec.Body.String())
 			}
 		}
+	}
+}
+
+func TestImageMutationEndpointsCanBeDisabled(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{},
+		execs:      map[string]*ExecInstance{},
+		proxies:    map[string][]*portProxy{},
+		stateDir:   t.TempDir(),
+	}
+	cfg := appConfig{stateDir: store.stateDir, enableImageMutations: false}
+	handler := timeoutMiddleware(apiVersionMiddleware(newRouter(store, &metrics{}, cfg, &probeState{})))
+
+	req := httptest.NewRequest(http.MethodPost, "/images/alpine/tag?repo=example.local/test&tag=latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /images/{name}/tag status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestArchiveUploadCanBeDisabled(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{},
+		execs:      map[string]*ExecInstance{},
+		proxies:    map[string][]*portProxy{},
+		stateDir:   t.TempDir(),
+	}
+	cfg := appConfig{stateDir: store.stateDir, enableArchiveUpload: false}
+	handler := timeoutMiddleware(apiVersionMiddleware(newRouter(store, &metrics{}, cfg, &probeState{})))
+
+	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=/tmp", bytes.NewReader(nil))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("PUT /containers/{id}/archive status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }

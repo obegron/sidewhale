@@ -6,13 +6,15 @@ import (
 )
 
 type appConfig struct {
-	listenAddr      string
-	stateDir        string
-	unixSocketPath  string
-	allowedPrefixes []string
-	mirrorRules     []imageMirrorRule
-	trustInsecure   bool
-	limits          runtimeLimits
+	listenAddr           string
+	stateDir             string
+	unixSocketPath       string
+	allowedPrefixes      []string
+	mirrorRules          []imageMirrorRule
+	trustInsecure        bool
+	enableImageMutations bool
+	enableArchiveUpload  bool
+	limits               runtimeLimits
 }
 
 func initConfig() (appConfig, bool, error) {
@@ -29,6 +31,8 @@ func initConfig() (appConfig, bool, error) {
 	imageMirrors := flag.String("image-mirrors", "", "comma-separated image rewrite rules from=to")
 	mirrorFile := flag.String("image-mirror-file", "", "YAML file with image rewrite rules")
 	trustInsecure := flag.Bool("trust-insecure", false, "skip TLS certificate verification for image pulls")
+	enableImageMutations := flag.Bool("enable-image-mutations", true, "enable image mutation APIs (tag/push/delete)")
+	enableArchiveUpload := flag.Bool("enable-archive-upload", true, "enable PUT /containers/{id}/archive")
 	printVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -46,12 +50,14 @@ func initConfig() (appConfig, bool, error) {
 	}
 
 	cfg := appConfig{
-		listenAddr:      *listenAddr,
-		stateDir:        *stateDir,
-		unixSocketPath:  resolveUnixSocketPath(*listenUnix, *stateDir),
-		allowedPrefixes: allowedPrefixes,
-		mirrorRules:     mirrorRules,
-		trustInsecure:   *trustInsecure,
+		listenAddr:           *listenAddr,
+		stateDir:             *stateDir,
+		unixSocketPath:       resolveUnixSocketPath(*listenUnix, *stateDir),
+		allowedPrefixes:      allowedPrefixes,
+		mirrorRules:          mirrorRules,
+		trustInsecure:        *trustInsecure,
+		enableImageMutations: *enableImageMutations,
+		enableArchiveUpload:  *enableArchiveUpload,
 		limits: runtimeLimits{
 			maxConcurrent: *maxConcurrent,
 			maxRuntime:    *maxRuntime,
