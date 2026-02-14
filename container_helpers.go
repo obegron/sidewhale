@@ -147,9 +147,6 @@ func writeContainerIdentityFiles(rootfs, hostname string) error {
 
 	hostsPath := filepath.Join(etcDir, "hosts")
 	existing, _ := os.ReadFile(hostsPath)
-	if hostsFileHasHostname(existing, hostname) {
-		return nil
-	}
 	var content strings.Builder
 	if len(existing) > 0 {
 		content.Write(existing)
@@ -160,7 +157,16 @@ func writeContainerIdentityFiles(rootfs, hostname string) error {
 		content.WriteString("127.0.0.1\tlocalhost\n")
 		content.WriteString("::1\tlocalhost ip6-localhost ip6-loopback\n")
 	}
-	content.WriteString("127.0.1.1\t" + hostname + "\n")
+	if !hostsFileHasHostname(existing, hostname) {
+		content.WriteString("127.0.1.1\t" + hostname + "\n")
+	}
+	// In proot we share host UTS hostname; add it so JVM services can resolve local host.
+	if hostName, err := os.Hostname(); err == nil {
+		hostName = normalizeContainerHostname(hostName)
+		if hostName != "" && hostName != hostname && !hostsFileHasHostname(existing, hostName) {
+			content.WriteString("127.0.1.1\t" + hostName + "\n")
+		}
+	}
 	return os.WriteFile(hostsPath, []byte(content.String()), 0o644)
 }
 

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestEventsEndpointReturnsEmptyArray(t *testing.T) {
+func TestEventsEndpointReturnsEventObject(t *testing.T) {
 	store := &containerStore{
 		containers: map[string]*Container{},
 		execs:      map[string]*ExecInstance{},
@@ -25,8 +25,15 @@ func TestEventsEndpointReturnsEmptyArray(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /events status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); body != "[]" {
-		t.Fatalf("GET /events body = %q, want []", body)
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("GET /events invalid json: %v", err)
+	}
+	if payload["Type"] != "container" {
+		t.Fatalf("GET /events payload Type=%v, want container", payload["Type"])
+	}
+	if payload["Action"] != "noop" {
+		t.Fatalf("GET /events payload Action=%v, want noop", payload["Action"])
 	}
 }
 

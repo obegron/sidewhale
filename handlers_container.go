@@ -80,6 +80,10 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusInternalServerError, "tmp allocation failed")
 		return
 	}
+	if err := os.Chmod(tmpPath, 0o1777); err != nil {
+		writeError(w, http.StatusInternalServerError, "tmp allocation failed")
+		return
+	}
 
 	entrypoint := req.Entrypoint
 	cmd := req.Cmd
@@ -217,6 +221,17 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 			m.mu.Unlock()
 		}
 		writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+		return
+	}
+	if err := os.Chmod(containerTmpDir(c), 0o1777); err != nil {
+		if reserved {
+			m.mu.Lock()
+			if m.running > 0 {
+				m.running--
+			}
+			m.mu.Unlock()
+		}
+		writeError(w, http.StatusInternalServerError, "start failed: tmp permission fix failed")
 		return
 	}
 
@@ -507,7 +522,22 @@ func handleTop(w http.ResponseWriter, r *http.Request, store *containerStore, id
 func handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("[]"))
+	now := time.Now().UTC()
+	evt := map[string]interface{}{
+		"status": "noop",
+		"id":     "sidewhale",
+		"from":   "sidewhale",
+		"Type":   "container",
+		"Action": "noop",
+		"Actor": map[string]interface{}{
+			"ID":         "sidewhale",
+			"Attributes": map[string]string{},
+		},
+		"time":     now.Unix(),
+		"timeNano": now.UnixNano(),
+	}
+	enc := json.NewEncoder(w)
+	_ = enc.Encode(evt)
 }
 
 func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
