@@ -92,4 +92,29 @@ func TestCreatePodEntrypointAndArgsMappedSeparately(t *testing.T) {
 	if len(args) != 1 || args[0] != "echo ok" {
 		t.Fatalf("args = %#v, want [echo ok]", args)
 	}
+
+	volumeMounts, ok := container["volumeMounts"].([]interface{})
+	if !ok || len(volumeMounts) != 1 {
+		t.Fatalf("volumeMounts = %#v, want one /dev/shm mount", container["volumeMounts"])
+	}
+	vm := volumeMounts[0].(map[string]interface{})
+	if vm["name"] != "dshm" || vm["mountPath"] != "/dev/shm" {
+		t.Fatalf("volumeMount = %#v, want {name:dshm mountPath:/dev/shm}", vm)
+	}
+
+	volumes, ok := spec["volumes"].([]interface{})
+	if !ok || len(volumes) != 1 {
+		t.Fatalf("volumes = %#v, want one dshm volume", spec["volumes"])
+	}
+	vol := volumes[0].(map[string]interface{})
+	if vol["name"] != "dshm" {
+		t.Fatalf("volume name = %#v, want dshm", vol["name"])
+	}
+	emptyDir, ok := vol["emptyDir"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("emptyDir missing from volume: %#v", vol)
+	}
+	if emptyDir["medium"] != "Memory" || emptyDir["sizeLimit"] != "1Gi" {
+		t.Fatalf("emptyDir = %#v, want medium=Memory sizeLimit=1Gi", emptyDir)
+	}
 }

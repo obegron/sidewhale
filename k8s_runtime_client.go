@@ -153,6 +153,12 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		"image":           image,
 		"imagePullPolicy": "IfNotPresent",
 		"env":             env,
+		"volumeMounts": []map[string]interface{}{
+			{
+				"name":      "dshm",
+				"mountPath": "/dev/shm",
+			},
+		},
 	}
 	if len(entrypoint) > 0 {
 		containerSpec["command"] = entrypoint
@@ -178,6 +184,15 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		"spec": map[string]interface{}{
 			"restartPolicy": "Never",
 			"containers":    []map[string]interface{}{containerSpec},
+			"volumes": []map[string]interface{}{
+				{
+					"name": "dshm",
+					"emptyDir": map[string]interface{}{
+						"medium":    "Memory",
+						"sizeLimit": "1Gi",
+					},
+				},
+			},
 		},
 	}
 	if len(hostAliasMap) > 0 {
