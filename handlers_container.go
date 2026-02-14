@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,25 +119,26 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 	}
 
 	c := &Container{
-		ID:           id,
-		Name:         name,
-		Hostname:     hostname,
-		User:         firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
-		Image:        req.Image,
-		Rootfs:       rootfs,
-		Created:      time.Now().UTC(),
-		Running:      false,
-		ExitCode:     0,
-		Ports:        ports,
-		ExposedPorts: allExposed,
-		Env:          env,
-		WorkingDir:   workingDir,
-		LogPath:      logPath,
-		StdoutPath:   stdoutPath,
-		StderrPath:   stderrPath,
-		Cmd:          append(entrypoint, cmd...),
-		NetworkMode:  "bridge",
-		ExtraHosts:   normalizeExtraHosts(req.HostConfig.ExtraHosts),
+		ID:            id,
+		Name:          name,
+		Hostname:      hostname,
+		User:          firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
+		Image:         req.Image,
+		ResolvedImage: resolvedRef,
+		Rootfs:        rootfs,
+		Created:       time.Now().UTC(),
+		Running:       false,
+		ExitCode:      0,
+		Ports:         ports,
+		ExposedPorts:  allExposed,
+		Env:           env,
+		WorkingDir:    workingDir,
+		LogPath:       logPath,
+		StdoutPath:    stdoutPath,
+		StderrPath:    stderrPath,
+		Cmd:           append(entrypoint, cmd...),
+		NetworkMode:   "bridge",
+		ExtraHosts:    normalizeExtraHosts(req.HostConfig.ExtraHosts),
 	}
 
 	requestedMode := strings.TrimSpace(req.HostConfig.NetworkMode)
@@ -200,7 +202,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 	writeJSON(w, http.StatusCreated, createResponse{ID: id, Warnings: nil})
 }
 
-func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, m *metrics, limits runtimeLimits, id string) {
+func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, m *metrics, limits runtimeLimits, runtimeBackend, k8sRuntimeNamespace string, k8sImagePullSecrets []string, id string) {
 	c, ok := store.get(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
@@ -221,6 +223,108 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		m.mu.Unlock()
 	}
 	reserved := limits.maxConcurrent > 0
+	if runtimeBackend == runtimeBackendK8s {
+		client, err := newInClusterK8sClient()
+		if err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
+		}
+		if ns := strings.TrimSpace(k8sRuntimeNamespace); ns != "" {
+			client.namespace = ns
+		}
+		client.imagePullSecrets = append([]string{}, k8sImagePullSecrets...)
+		if c.K8sPodName == "" {
+			podName, err := client.createPod(r.Context(), c)
+			if err != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				m.mu.Lock()
+				m.startFailures++
+				m.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+				return
+			}
+			c.K8sPodName = podName
+			c.K8sNamespace = client.namespace
+		}
+		podIP, podState, err := client.waitForPodStarted(r.Context(), c.K8sNamespace, c.K8sPodName, 2*time.Minute)
+		if err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			m.mu.Lock()
+			m.startFailures++
+			m.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
+		}
+		targets := map[int]string{}
+		if podState.Running {
+			for cp := range c.Ports {
+				targets[cp] = fmt.Sprintf("%s:%d", podIP, cp)
+			}
+			store.stopProxies(c.ID)
+			proxies, err := startPortProxies(c.Ports, targets)
+			if err != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				m.mu.Lock()
+				m.startFailures++
+				m.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "port proxy failed")
+				return
+			}
+			store.setProxies(c.ID, proxies)
+		}
+		c.Running = podState.Running
+		c.Pid = 0
+		c.ExitCode = podState.ExitCode
+		if podState.StartedAt.IsZero() {
+			c.StartedAt = time.Now().UTC()
+		} else {
+			c.StartedAt = podState.StartedAt
+		}
+		c.FinishedAt = podState.FinishedAt
+		c.K8sPodIP = podIP
+		c.PortTargets = targets
+		if err := store.save(c); err != nil {
+			store.stopProxies(c.ID)
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "state write failed")
+			return
+		}
+		startedAt := time.Now()
+		go monitorK8sPod(c.ID, c.K8sNamespace, c.K8sPodName, store, m, startedAt)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	cmdArgs := c.Cmd
 	if len(cmdArgs) == 0 {
@@ -515,6 +619,17 @@ func handleStop(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		writeError(w, http.StatusNotFound, "container not found")
 		return
 	}
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err == nil {
+			_ = client.deletePod(r.Context(), c.K8sNamespace, c.K8sPodName, 2)
+		}
+		store.stopProxies(c.ID)
+		exitCode := 137
+		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if !c.Running || c.Pid == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -531,6 +646,17 @@ func handleKill(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	c, ok := store.get(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
+		return
+	}
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err == nil {
+			_ = client.deletePod(r.Context(), c.K8sNamespace, c.K8sPodName, 0)
+		}
+		store.stopProxies(c.ID)
+		exitCode := 137
+		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if !c.Running || c.Pid == 0 {
@@ -551,7 +677,14 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 		return
 	}
 	if c.Running {
-		terminateProcessTree(c.Pid, 2*time.Second)
+		if strings.TrimSpace(c.K8sPodName) != "" {
+			client, err := newInClusterK8sClient()
+			if err == nil {
+				_ = client.deletePod(r.Context(), c.K8sNamespace, c.K8sPodName, 2)
+			}
+		} else {
+			terminateProcessTree(c.Pid, 2*time.Second)
+		}
 		store.stopProxies(c.ID)
 		exitCode := 137
 		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
@@ -576,6 +709,11 @@ func handleJSON(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
+	}
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		if synced, err := syncK8sContainerState(r.Context(), store, c); err == nil && synced != nil {
+			c = synced
+		}
 	}
 	exposed := c.ExposedPorts
 	if len(exposed) == 0 {
@@ -688,6 +826,21 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	c, ok := store.get(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
+		return
+	}
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+		logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		_, _ = w.Write(frameDockerRawStream(1, logs))
 		return
 	}
 	includeStdout := parseDockerBool(r.URL.Query().Get("stdout"), true)
@@ -892,7 +1045,12 @@ func handleWait(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			writeError(w, http.StatusNotFound, "container not found")
 			return
 		}
-		if c.Running && !processAlive(c.Pid) {
+		if strings.TrimSpace(c.K8sPodName) != "" {
+			if synced, err := syncK8sContainerState(r.Context(), store, c); err == nil && synced != nil {
+				c = synced
+			}
+		}
+		if c.Running && strings.TrimSpace(c.K8sPodName) == "" && !processAlive(c.Pid) {
 			store.markStopped(c.ID)
 			c, _ = store.get(id)
 		}
@@ -1101,6 +1259,121 @@ func refreshNetworkAliasHosts(store *containerStore, containerID string) {
 		}
 		_ = writeContainerIdentityFilesWithAliasesAndHosts(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID), c.ExtraHosts)
 	}
+}
+
+func monitorK8sPod(containerID, namespace, podName string, store *containerStore, m *metrics, startedAt time.Time) {
+	client, err := newInClusterK8sClient()
+	if err != nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		c, ok := store.get(containerID)
+		if !ok || !c.Running {
+			return
+		}
+		pod, err := client.getPod(context.Background(), namespace, podName)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				exitCode := 137
+				finishedAt := time.Now().UTC()
+				store.stopProxies(containerID)
+				store.markStoppedWithExit(containerID, &exitCode, finishedAt)
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.execDurationMs = time.Since(startedAt).Milliseconds()
+				m.mu.Unlock()
+				return
+			}
+			continue
+		}
+		state := podRuntimeState(pod)
+		switch strings.ToLower(strings.TrimSpace(pod.Status.Phase)) {
+		case "running", "pending":
+			if state.Running {
+				continue
+			}
+			continue
+		case "succeeded", "failed":
+			exitCode := state.ExitCode
+			finishedAt := time.Now().UTC()
+			store.stopProxies(containerID)
+			store.markStoppedWithExit(containerID, &exitCode, finishedAt)
+			m.mu.Lock()
+			if m.running > 0 {
+				m.running--
+			}
+			m.execDurationMs = time.Since(startedAt).Milliseconds()
+			m.mu.Unlock()
+			return
+		}
+	}
+}
+
+func syncK8sContainerState(ctx context.Context, store *containerStore, c *Container) (*Container, error) {
+	if c == nil || strings.TrimSpace(c.K8sPodName) == "" {
+		return c, nil
+	}
+	client, err := newInClusterK8sClient()
+	if err != nil {
+		return c, err
+	}
+	pod, err := client.getPod(ctx, c.K8sNamespace, c.K8sPodName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			c.Running = false
+			c.Pid = 0
+			if c.ExitCode == 0 {
+				c.ExitCode = 137
+			}
+			if c.FinishedAt.IsZero() {
+				c.FinishedAt = time.Now().UTC()
+			}
+			c.K8sPodIP = ""
+			store.stopProxies(c.ID)
+			_ = store.save(c)
+			updated, _ := store.get(c.ID)
+			if updated != nil {
+				return updated, nil
+			}
+			return c, nil
+		}
+		return c, err
+	}
+	state := podRuntimeState(pod)
+	c.K8sPodIP = strings.TrimSpace(pod.Status.PodIP)
+	c.Running = state.Running
+	if state.StartedAt.IsZero() {
+		if c.StartedAt.IsZero() {
+			c.StartedAt = time.Now().UTC()
+		}
+	} else {
+		c.StartedAt = state.StartedAt
+	}
+	if state.Running {
+		c.ExitCode = 0
+		c.FinishedAt = time.Time{}
+	} else {
+		c.Pid = 0
+		c.ExitCode = state.ExitCode
+		if state.FinishedAt.IsZero() {
+			if c.FinishedAt.IsZero() {
+				c.FinishedAt = time.Now().UTC()
+			}
+		} else {
+			c.FinishedAt = state.FinishedAt
+		}
+		store.stopProxies(c.ID)
+	}
+	_ = store.save(c)
+	updated, _ := store.get(c.ID)
+	if updated != nil {
+		return updated, nil
+	}
+	return c, nil
 }
 
 func writeNginxCompatConfig(rootfs string, listenPort int) error {

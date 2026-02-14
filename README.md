@@ -1,8 +1,10 @@
 ![sidewhale logo](assets/sidewhale-logo.png)
 
-`sidewhale` is a small Docker API shim for unprivileged, containerized Testcontainers execution.
+`sidewhale` is a small Docker API shim for Testcontainers execution in restricted environments.
 
-It is designed to run as a sidecar (for example in Kubernetes) so tests can use a Docker-compatible API without access to a host Docker socket.
+Primary target: **Docker-on-Kubernetes style execution** via the `k8s` runtime backend (Sidewhale service creates worker Pods through the Kubernetes API).
+
+It also supports a `host` runtime backend for sidecar-style usage where `proot` runs workloads locally in the Sidewhale process.
 
 It is not a container runtime and does not try to be Docker-compatible beyond what Testcontainers needs.
 
@@ -12,7 +14,8 @@ Early project. No compatibility or stability guarantees.
 
 Current focus:
 
-- Kubernetes sidecar usage
+- Kubernetes service runtime usage (`k8s` backend)
+- Sidecar fallback usage (`host` backend)
 - Testcontainers integration tests
 - Simple and deterministic behavior
 
@@ -75,6 +78,14 @@ docker build -t sidewhale:dev .
 docker run --rm --network host sidewhale:dev --listen :23750 --listen-unix /tmp/sidewhale/docker.sock
 ```
 
+Runtime backend flag:
+
+- `--runtime-backend=host` (default, current implementation)
+- `--runtime-backend=k8s` (in-cluster Pod execution backend, early implementation)
+- `--k8s-runtime-namespace=<ns>` (optional worker Pod namespace override for k8s backend)
+- `--k8s-image-pull-secrets=<name1,name2>` (optional imagePullSecrets for k8s worker Pods)
+- `--k8s-cleanup-orphans=true|false` (default `true`, deletes labeled worker Pods not present in persisted state)
+
 Then point Testcontainers (or any Docker API client) to:
 
 ```bash
@@ -126,3 +137,10 @@ By default this target sets `TESTCONTAINERS_RYUK_DISABLED=true`. Override if nee
 For current host-backend compatibility status across Testcontainers modules, see:
 
 - `docs/compatibility-matrix.md`
+
+## Deployment Profiles
+
+- `docs/deployment-profiles.md`
+- `deploy/sidewhale-host-sidecar.yaml`
+- `deploy/sidewhale-k8s-runtime.yaml`
+- `deploy/sidewhale-k8s-runtime-nodeport.yaml` (dev only)

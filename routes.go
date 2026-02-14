@@ -35,6 +35,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			"OSType":          "linux",
 			"Architecture":    "amd64",
 			"ServerVersion":   version,
+			"RuntimeBackend":  cfg.runtimeBackend,
 			"MemTotal":        memTotal,
 			"NCPU":            runtime.NumCPU(),
 			"Name":            "sidewhale",
@@ -151,7 +152,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleStart(w, r, store, m, cfg.limits, id)
+			handleStart(w, r, store, m, cfg.limits, cfg.runtimeBackend, cfg.k8sRuntimeNamespace, cfg.k8sImagePullSecrets, id)
 		case "kill":
 			if r.Method != http.MethodPost {
 				writeError(w, http.StatusNotFound, "not found")

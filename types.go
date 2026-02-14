@@ -7,30 +7,34 @@ import (
 )
 
 type Container struct {
-	ID           string    `json:"Id"`
-	Name         string    `json:"Name,omitempty"`
-	Hostname     string    `json:"Hostname,omitempty"`
-	User         string    `json:"User,omitempty"`
-	Image        string    `json:"Image"`
-	Rootfs       string    `json:"Rootfs"`
-	Created      time.Time `json:"Created"`
-	StartedAt    time.Time `json:"StartedAt,omitempty"`
-	FinishedAt   time.Time `json:"FinishedAt,omitempty"`
-	Running      bool      `json:"Running"`
-	ExitCode     int       `json:"ExitCode"`
-	Ports        map[int]int
-	PortTargets  map[int]string      `json:"PortTargets,omitempty"`
-	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
-	Env          []string            `json:"Env"`
-	LogPath      string              `json:"LogPath"`
-	StdoutPath   string              `json:"StdoutPath,omitempty"`
-	StderrPath   string              `json:"StderrPath,omitempty"`
-	Pid          int                 `json:"Pid"`
-	Cmd          []string            `json:"Cmd"`
-	WorkingDir   string              `json:"WorkingDir"`
-	LoopbackIP   string              `json:"LoopbackIP,omitempty"`
-	NetworkMode  string              `json:"NetworkMode,omitempty"`
-	ExtraHosts   []string            `json:"ExtraHosts,omitempty"`
+	ID            string    `json:"Id"`
+	Name          string    `json:"Name,omitempty"`
+	Hostname      string    `json:"Hostname,omitempty"`
+	User          string    `json:"User,omitempty"`
+	Image         string    `json:"Image"`
+	ResolvedImage string    `json:"ResolvedImage,omitempty"`
+	Rootfs        string    `json:"Rootfs"`
+	Created       time.Time `json:"Created"`
+	StartedAt     time.Time `json:"StartedAt,omitempty"`
+	FinishedAt    time.Time `json:"FinishedAt,omitempty"`
+	Running       bool      `json:"Running"`
+	ExitCode      int       `json:"ExitCode"`
+	Ports         map[int]int
+	PortTargets   map[int]string      `json:"PortTargets,omitempty"`
+	ExposedPorts  map[string]struct{} `json:"ExposedPorts,omitempty"`
+	Env           []string            `json:"Env"`
+	LogPath       string              `json:"LogPath"`
+	StdoutPath    string              `json:"StdoutPath,omitempty"`
+	StderrPath    string              `json:"StderrPath,omitempty"`
+	Pid           int                 `json:"Pid"`
+	Cmd           []string            `json:"Cmd"`
+	WorkingDir    string              `json:"WorkingDir"`
+	LoopbackIP    string              `json:"LoopbackIP,omitempty"`
+	NetworkMode   string              `json:"NetworkMode,omitempty"`
+	ExtraHosts    []string            `json:"ExtraHosts,omitempty"`
+	K8sNamespace  string              `json:"K8sNamespace,omitempty"`
+	K8sPodName    string              `json:"K8sPodName,omitempty"`
+	K8sPodIP      string              `json:"K8sPodIP,omitempty"`
 }
 
 type containerStore struct {

@@ -45,6 +45,9 @@ func main() {
 	}
 
 	m := &metrics{}
+	if cfg.runtimeBackend == runtimeBackendK8s {
+		reconcileK8sRuntime(store, m, cfg.k8sRuntimeNamespace, cfg.k8sCleanupOrphans)
+	}
 	probes := &probeState{}
 	mux := newRouter(store, m, cfg, probes)
 

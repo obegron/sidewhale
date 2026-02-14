@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sidewhale-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sidewhale-runtime
+  namespace: sidewhale-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sidewhale-runtime
+  namespace: sidewhale-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sidewhale-runtime
+  namespace: sidewhale-system
+subjects:
+  - kind: ServiceAccount
+    name: sidewhale-runtime
+    namespace: sidewhale-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sidewhale-runtime
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidewhale
+  namespace: sidewhale-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sidewhale
+  template:
+    metadata:
+      labels:
+        app: sidewhale
+    spec:
+      serviceAccountName: sidewhale-runtime
+      containers:
+        - name: sidewhale
+          image: sidewhale:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          args:
+            - --listen
+            - :23750
+            - --listen-unix
+            - "-"
+            - --state-dir
+            - /var/lib/sidewhale
+            - --runtime-backend
+            - k8s
+          ports:
+            - containerPort: 23750
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 23750
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 23750
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/sidewhale
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: sidewhale-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sidewhale
+  namespace: sidewhale-system
+spec:
+  selector:
+    app: sidewhale
+  ports:
+    - name: http
+      port: 23750
+      targetPort: 23750
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sidewhale-state
+  namespace: sidewhale-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

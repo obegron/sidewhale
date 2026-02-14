@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sidewhale-nodeport
+  namespace: sidewhale-system
+spec:
+  selector:
+    app: sidewhale
+  type: NodePort
+  ports:
+    - name: http
+      port: 23750
+      targetPort: 23750
+      nodePort: 32375

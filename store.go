@@ -133,6 +133,16 @@ func (s *containerStore) listContainers() []map[string]interface{} {
 	return out
 }
 
+func (s *containerStore) listContainerIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.containers))
+	for id := range s.containers {
+		out = append(out, id)
+	}
+	return out
+}
+
 func normalizeContainerName(raw string) string {
 	return strings.TrimPrefix(strings.TrimSpace(raw), "/")
 }
@@ -198,9 +208,10 @@ func (s *containerStore) getExec(id string) (*ExecInstance, bool) {
 
 func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	type stopTarget struct {
-		id      string
-		running bool
-		pid     int
+		id         string
+		running    bool
+		pid        int
+		k8sManaged bool
 	}
 
 	s.mu.Lock()
@@ -208,9 +219,10 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	extraProxyIDs := make([]string, 0, len(s.proxies))
 	for _, c := range s.containers {
 		targets = append(targets, stopTarget{
-			id:      c.ID,
-			running: c.Running,
-			pid:     c.Pid,
+			id:         c.ID,
+			running:    c.Running,
+			pid:        c.Pid,
+			k8sManaged: strings.TrimSpace(c.K8sPodName) != "",
 		})
 	}
 	for id := range s.proxies {
@@ -226,9 +238,14 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 		if target.running {
 			if target.pid > 0 {
 				terminateProcessTree(target.pid, grace)
+				s.markStopped(target.id)
+				stopped++
+				continue
 			}
-			s.markStopped(target.id)
-			stopped++
+			if !target.k8sManaged {
+				s.markStopped(target.id)
+				stopped++
+			}
 		}
 	}
 	for _, id := range extraProxyIDs {
