@@ -12,9 +12,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -117,7 +120,7 @@ func newInClusterK8sClient() (*k8sClient, error) {
 	}, nil
 }
 
-func (k *k8sClient) createPod(ctx context.Context, c *Container) (string, error) {
+func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap map[string]string) (string, error) {
 	image := strings.TrimSpace(c.ResolvedImage)
 	if image == "" {
 		image = strings.TrimSpace(c.Image)
@@ -176,6 +179,35 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container) (string, error)
 			"restartPolicy": "Never",
 			"containers":    []map[string]interface{}{containerSpec},
 		},
+	}
+	if len(hostAliasMap) > 0 {
+		grouped := map[string][]string{}
+		for host, ip := range hostAliasMap {
+			host = strings.ToLower(normalizeContainerHostname(host))
+			ip = strings.TrimSpace(ip)
+			if host == "" || ip == "" {
+				continue
+			}
+			grouped[ip] = append(grouped[ip], host)
+		}
+		if len(grouped) > 0 {
+			ips := make([]string, 0, len(grouped))
+			for ip := range grouped {
+				ips = append(ips, ip)
+			}
+			sort.Strings(ips)
+			hostAliases := make([]map[string]interface{}, 0, len(ips))
+			for _, ip := range ips {
+				names := grouped[ip]
+				sort.Strings(names)
+				hostAliases = append(hostAliases, map[string]interface{}{
+					"ip":        ip,
+					"hostnames": names,
+				})
+			}
+			podSpec := pod["spec"].(map[string]interface{})
+			podSpec["hostAliases"] = hostAliases
+		}
 	}
 	if len(k.imagePullSecrets) > 0 {
 		items := make([]map[string]string, 0, len(k.imagePullSecrets))
@@ -345,6 +377,163 @@ func (k *k8sClient) doJSON(ctx context.Context, method, path string, body []byte
 		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	return k.http.Do(req)
+}
+
+func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []string) ([]byte, []byte, int, error) {
+	if len(cmd) == 0 {
+		return nil, nil, 126, fmt.Errorf("missing exec command")
+	}
+	ns := strings.TrimSpace(namespace)
+	if ns == "" {
+		ns = k.namespace
+	}
+	u, err := url.Parse(k.baseURL)
+	if err != nil {
+		return nil, nil, 126, err
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = "/api/v1/namespaces/" + url.PathEscape(ns) + "/pods/" + url.PathEscape(name) + "/exec"
+	q := url.Values{}
+	q.Set("container", k8sRuntimeContainerName)
+	q.Set("stdin", "false")
+	q.Set("stdout", "true")
+	q.Set("stderr", "true")
+	q.Set("tty", "false")
+	for _, c := range cmd {
+		q.Add("command", c)
+	}
+	u.RawQuery = q.Encode()
+
+	dialer := websocket.Dialer{}
+	if tr, ok := k.http.Transport.(*http.Transport); ok && tr != nil {
+		dialer.TLSClientConfig = tr.TLSClientConfig
+		dialer.Proxy = tr.Proxy
+	}
+	header := http.Header{}
+	if strings.TrimSpace(k.token) != "" {
+		header.Set("Authorization", "Bearer "+k.token)
+	}
+	header.Set("Sec-WebSocket-Protocol", "v4.channel.k8s.io")
+	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return nil, nil, 126, fmt.Errorf("k8s exec dial failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return nil, nil, 126, err
+	}
+	defer conn.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := 0
+	for {
+		if ctx.Err() != nil {
+			return stdout.Bytes(), stderr.Bytes(), 126, ctx.Err()
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		msgType, payload, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				break
+			}
+			if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
+				continue
+			}
+			break
+		}
+		if msgType != websocket.BinaryMessage && msgType != websocket.TextMessage {
+			continue
+		}
+		if len(payload) == 0 {
+			continue
+		}
+		ch := payload[0]
+		data := payload[1:]
+		switch ch {
+		case 1:
+			_, _ = stdout.Write(data)
+		case 2:
+			_, _ = stderr.Write(data)
+		case 3:
+			code, message, failed := parseK8sExecStatus(data)
+			if failed {
+				if code >= 0 {
+					exitCode = code
+				} else if exitCode == 0 {
+					exitCode = 126
+				}
+				if strings.TrimSpace(message) != "" {
+					_, _ = stderr.WriteString(strings.TrimSpace(message))
+					_, _ = stderr.WriteString("\n")
+				}
+			}
+		}
+	}
+	return stdout.Bytes(), stderr.Bytes(), exitCode, nil
+}
+
+func parseK8sExecStatus(data []byte) (exitCode int, message string, failed bool) {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return -1, "", false
+	}
+	type statusCause struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	type statusDetails struct {
+		Causes []statusCause `json:"causes"`
+	}
+	type statusEnvelope struct {
+		Status  string        `json:"status"`
+		Message string        `json:"message"`
+		Details statusDetails `json:"details"`
+	}
+	var st statusEnvelope
+	if err := json.Unmarshal([]byte(raw), &st); err == nil {
+		if strings.EqualFold(strings.TrimSpace(st.Status), "Success") {
+			return 0, "", false
+		}
+		for _, c := range st.Details.Causes {
+			if strings.EqualFold(strings.TrimSpace(c.Reason), "ExitCode") {
+				if n, err := strconv.Atoi(strings.TrimSpace(c.Message)); err == nil {
+					return n, st.Message, true
+				}
+			}
+		}
+		if n, ok := parseExecExitCode(st.Message); ok {
+			return n, st.Message, true
+		}
+		return -1, firstNonEmpty(st.Message, raw), true
+	}
+	if n, ok := parseExecExitCode(raw); ok {
+		return n, raw, true
+	}
+	return -1, raw, true
+}
+
+func parseExecExitCode(msg string) (int, bool) {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return 0, false
+	}
+	needle := "exit code"
+	idx := strings.LastIndex(strings.ToLower(msg), needle)
+	if idx == -1 {
+		return 0, false
+	}
+	num := strings.TrimSpace(msg[idx+len(needle):])
+	n, err := strconv.Atoi(num)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func podRuntimeState(pod *k8sPod) k8sPodRuntimeState {

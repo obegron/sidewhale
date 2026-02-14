@@ -264,7 +264,15 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		}
 		client.imagePullSecrets = append([]string{}, k8sImagePullSecrets...)
 		if c.K8sPodName == "" {
-			podName, err := client.createPod(r.Context(), c)
+			hostAliasMap := store.peerHostAliasesForContainer(c.ID)
+			for _, raw := range c.ExtraHosts {
+				host, ip, ok := parseExtraHost(raw)
+				if !ok {
+					continue
+				}
+				hostAliasMap[host] = ip
+			}
+			podName, err := client.createPod(r.Context(), c, hostAliasMap)
 			if err != nil {
 				if reserved {
 					m.mu.Lock()

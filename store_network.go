@@ -297,3 +297,47 @@ func (s *containerStore) containersSharingNetworks(containerID string) []string 
 	sort.Strings(out)
 	return out
 }
+
+func (s *containerStore) peerHostAliasesForContainer(containerID string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureNetworksMapLocked()
+	out := map[string]string{}
+	for _, n := range s.networks {
+		if _, attached := n.Containers[containerID]; !attached {
+			continue
+		}
+		for peerID, ep := range n.Containers {
+			if peerID == containerID || ep == nil {
+				continue
+			}
+			peer := s.containers[peerID]
+			if peer == nil {
+				continue
+			}
+			ip := strings.TrimSpace(peer.K8sPodIP)
+			if ip == "" {
+				ip = strings.TrimSpace(peer.LoopbackIP)
+			}
+			if ip == "" {
+				continue
+			}
+			for _, alias := range ep.Aliases {
+				alias = normalizeContainerHostname(alias)
+				if alias == "" {
+					continue
+				}
+				if _, ok := out[alias]; !ok {
+					out[alias] = ip
+				}
+			}
+			name := normalizeContainerHostname(ep.Name)
+			if name != "" {
+				if _, ok := out[name]; !ok {
+					out[name] = ip
+				}
+			}
+		}
+	}
+	return out
+}

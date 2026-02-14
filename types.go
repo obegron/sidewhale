@@ -52,6 +52,9 @@ type ExecInstance struct {
 	ID          string
 	ContainerID string
 	Cmd         []string
+	User        string
+	WorkingDir  string
+	Env         []string
 	Running     bool
 	ExitCode    int
 	Output      []byte
@@ -92,6 +95,9 @@ type execCreateRequest struct {
 	Cmd          []string `json:"Cmd"`
 	AttachStdout bool     `json:"AttachStdout"`
 	AttachStderr bool     `json:"AttachStderr"`
+	User         string   `json:"User,omitempty"`
+	WorkingDir   string   `json:"WorkingDir,omitempty"`
+	Env          []string `json:"Env,omitempty"`
 }
 
 type execCreateResponse struct {

@@ -34,7 +34,7 @@ func TestCreatePodLegacyCmdMappedToArgs(t *testing.T) {
 		ResolvedImage: "postgres:9.6.12",
 		Cmd:           []string{"postgres", "-c", "fsync=off"},
 	}
-	if _, err := client.createPod(context.Background(), c); err != nil {
+	if _, err := client.createPod(context.Background(), c, nil); err != nil {
 		t.Fatalf("createPod failed: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestCreatePodEntrypointAndArgsMappedSeparately(t *testing.T) {
 		Entrypoint:    []string{"sh", "-c"},
 		Args:          []string{"echo ok"},
 	}
-	if _, err := client.createPod(context.Background(), c); err != nil {
+	if _, err := client.createPod(context.Background(), c, nil); err != nil {
 		t.Fatalf("createPod failed: %v", err)
 	}
 
@@ -93,4 +93,3 @@ func TestCreatePodEntrypointAndArgsMappedSeparately(t *testing.T) {
 		t.Fatalf("args = %#v, want [echo ok]", args)
 	}
 }
-
