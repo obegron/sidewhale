@@ -19,6 +19,9 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			"Version":       version,
 			"ApiVersion":    "1.41",
 			"MinAPIVersion": "1.12",
+			"GitCommit":     gitCommit,
+			"GoVersion":     goVersion,
+			"BuildTime":     buildTime,
 			"Os":            "linux",
 			"Arch":          "amd64",
 		})

@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sidewhale-upstream-tests
+  namespace: sidewhale-system
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: runner
+          image: sidewhale-test-runner:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DOCKER_HOST
+              value: tcp://sidewhale:23750
+            - name: TESTCONTAINERS_RYUK_DISABLED
+              value: "true"
+            - name: TESTCONTAINERS_CHECKS_DISABLE
+              value: "true"
+            - name: UPSTREAM_TC_TASK
+              value: :testcontainers:test
+            - name: UPSTREAM_TC_TEST_ARGS
+              value: --tests org.testcontainers.containers.ContainerStateTest
+            - name: UPSTREAM_TC_EXTRA_GRADLE_ARGS
+              value: --rerun-tasks --max-workers=1 --no-daemon
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}

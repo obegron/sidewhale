@@ -138,6 +138,42 @@ make integration-test
 
 By default this target sets `TESTCONTAINERS_RYUK_DISABLED=true`. Override if needed.
 
+## Upstream Testcontainers In-Cluster Runner
+
+To avoid local `kubectl port-forward` instability, you can run upstream Gradle tests entirely inside Kubernetes.
+
+Build/import runner image:
+
+```bash
+make integration-test-upstream-k8s-image
+```
+
+Run a Job in `sidewhale-system` (default baseline is `ContainerStateTest`):
+
+```bash
+make integration-test-upstream-k8s
+```
+
+Useful overrides:
+
+```bash
+make integration-test-upstream-k8s \
+  K8S_UPSTREAM_TASK=":testcontainers:test" \
+  K8S_UPSTREAM_TEST_ARGS="--tests org.testcontainers.dockerclient.ImagePullTest"
+```
+
+Follow logs later:
+
+```bash
+make integration-test-upstream-k8s-logs
+```
+
+Delete job:
+
+```bash
+make integration-test-upstream-k8s-clean
+```
+
 ## Compatibility Matrix
 
 For current host-backend compatibility status across Testcontainers modules, see:

@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 )
 
 var version = "dev"
+var gitCommit = "unknown"
+var buildTime = "unknown"
+var goVersion = runtime.Version()
 
 const extractorVersion = "v2"
 
