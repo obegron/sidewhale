@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore, allowedPrefixes []string, mirrorRules []imageMirrorRule, unixSocketPath string, trustInsecure bool) {
+func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore, runtimeBackend string, allowedPrefixes []string, mirrorRules []imageMirrorRule, unixSocketPath string, trustInsecure bool) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -39,18 +39,25 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		return
 	}
 
-	imageRootfs, meta, _, err := ensureImageWithFallback(
-		r.Context(),
-		resolvedRef,
-		req.Image,
-		store.stateDir,
-		nil,
-		trustInsecure,
-		ensureImage,
+	var (
+		imageRootfs string
+		meta        imageMeta
+		err         error
 	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if runtimeBackend != runtimeBackendK8s {
+		imageRootfs, meta, _, err = ensureImageWithFallback(
+			r.Context(),
+			resolvedRef,
+			req.Image,
+			store.stateDir,
+			nil,
+			trustInsecure,
+			ensureImage,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	id, err := randomID(12)
 	if err != nil {
@@ -67,13 +74,15 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusInternalServerError, "rootfs allocation failed")
 		return
 	}
-	if err := copyDir(imageRootfs, rootfs); err != nil {
-		writeError(w, http.StatusInternalServerError, "rootfs copy failed")
-		return
-	}
-	if err := writeContainerIdentityFiles(rootfs, hostname); err != nil {
-		writeError(w, http.StatusInternalServerError, "hostname setup failed")
-		return
+	if runtimeBackend != runtimeBackendK8s {
+		if err := copyDir(imageRootfs, rootfs); err != nil {
+			writeError(w, http.StatusInternalServerError, "rootfs copy failed")
+			return
+		}
+		if err := writeContainerIdentityFiles(rootfs, hostname); err != nil {
+			writeError(w, http.StatusInternalServerError, "hostname setup failed")
+			return
+		}
 	}
 	logPath := filepath.Join(store.stateDir, "containers", id, "container.log")
 	stdoutPath := filepath.Join(store.stateDir, "containers", id, "stdout.log")
@@ -107,7 +116,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 	if workingDir == "" {
 		workingDir = meta.WorkingDir
 	}
-	if workingDir == "" {
+	if workingDir == "" && runtimeBackend != runtimeBackendK8s {
 		workingDir = "/"
 	}
 

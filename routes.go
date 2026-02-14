@@ -133,7 +133,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			return
 		}
 		if path == "create" && r.Method == http.MethodPost {
-			handleCreate(w, r, store, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure)
+			handleCreate(w, r, store, cfg.runtimeBackend, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure)
 			return
 		}
 		parts := strings.Split(path, "/")
@@ -255,6 +255,15 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusNotFound, "not found")
 			return
+		}
+		if cfg.runtimeBackend == runtimeBackendK8s {
+			for _, id := range store.listContainerIDs() {
+				c, ok := store.get(id)
+				if !ok || c == nil || strings.TrimSpace(c.K8sPodName) == "" {
+					continue
+				}
+				_, _ = syncK8sContainerState(r.Context(), store, c)
+			}
 		}
 		list := store.listContainers()
 		writeJSON(w, http.StatusOK, list)
