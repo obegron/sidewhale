@@ -168,6 +168,23 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 		if err := os.MkdirAll(mapArchivePath(targetPath, mapDst), 0o755); err != nil {
 			return err
 		}
+		// Docker archive extraction into an existing directory behaves like "extract contents".
+		// When the archive has a single top-level directory, flatten it so files land directly
+		// under the destination directory (for example /etc/mysql/conf.d/my.cnf).
+		if len(entries) == 1 && entries[0].IsDir() {
+			innerEntries, err := os.ReadDir(filepath.Join(tmpDir, entries[0].Name()))
+			if err != nil {
+				return err
+			}
+			for _, entry := range innerEntries {
+				src := filepath.Join(tmpDir, entries[0].Name(), entry.Name())
+				dst := filepath.Join(targetPath, entry.Name())
+				if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		for _, entry := range entries {
 			src := filepath.Join(tmpDir, entry.Name())
 			dst := filepath.Join(targetPath, entry.Name())
