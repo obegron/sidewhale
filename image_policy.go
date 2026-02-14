@@ -164,8 +164,9 @@ func isImageAllowed(ref string, prefixes []string) bool {
 		return true
 	}
 	for _, candidate := range imageMatchCandidates(ref) {
+		candidateLower := strings.ToLower(candidate)
 		for _, prefix := range prefixes {
-			if strings.HasPrefix(candidate, prefix) {
+			if strings.HasPrefix(candidateLower, strings.ToLower(prefix)) {
 				return true
 			}
 		}
@@ -181,8 +182,8 @@ func rewriteImageReference(ref string, rules []imageMirrorRule) string {
 	candidates := orderedImageCandidates(ref, false)
 	for _, rule := range rules {
 		for _, candidate := range candidates {
-			if strings.HasPrefix(candidate, rule.FromPrefix) {
-				return rule.ToPrefix + strings.TrimPrefix(candidate, rule.FromPrefix)
+			if rest, ok := trimPrefixFold(candidate, rule.FromPrefix); ok {
+				return rule.ToPrefix + rest
 			}
 		}
 	}
@@ -225,7 +226,7 @@ func orderedImageCandidates(ref string, includeContext bool) []string {
 }
 
 func normalizeImageToken(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimSpace(s)
 }
 
 func imageRefHasTag(ref string) bool {
@@ -239,18 +240,29 @@ func imageRefHasTag(ref string) bool {
 }
 
 func dockerHubAliases(s string) []string {
-	s = normalizeImageToken(s)
-	if s == "" {
+	raw := normalizeImageToken(s)
+	if raw == "" {
 		return nil
 	}
+	s = strings.ToLower(raw)
 	const dockerIO = "docker.io/"
 	const indexDockerIO = "index.docker.io/"
 	switch {
 	case strings.HasPrefix(s, dockerIO):
-		return []string{indexDockerIO + strings.TrimPrefix(s, dockerIO)}
+		return []string{indexDockerIO + raw[len(dockerIO):]}
 	case strings.HasPrefix(s, indexDockerIO):
-		return []string{dockerIO + strings.TrimPrefix(s, indexDockerIO)}
+		return []string{dockerIO + raw[len(indexDockerIO):]}
 	default:
 		return nil
 	}
+}
+
+func trimPrefixFold(s string, prefix string) (string, bool) {
+	if len(prefix) > len(s) {
+		return "", false
+	}
+	if !strings.EqualFold(s[:len(prefix)], prefix) {
+		return "", false
+	}
+	return s[len(prefix):], true
 }
