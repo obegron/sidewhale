@@ -42,6 +42,12 @@ Current focus:
 
 ## Docker API Support Matrix
 
+Backend modes:
+
+- `--runtime-backend=host` (proot execution in Sidewhale process)
+- `--runtime-backend=k8s` (worker Pod execution via Kubernetes API)
+- Most endpoints are shared, but runtime behavior differs at `create/start/stop/kill/delete/inspect/logs/wait`.
+
 Implemented:
 
 - `GET /_ping`
