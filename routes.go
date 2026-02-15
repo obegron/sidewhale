@@ -136,7 +136,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			return
 		}
 		if path == "create" && r.Method == http.MethodPost {
-			handleCreate(w, r, store, cfg.runtimeBackend, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure)
+			handleCreate(w, r, store, cfg.runtimeBackend, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure, ensureImage)
 			return
 		}
 		parts := strings.Split(path, "/")

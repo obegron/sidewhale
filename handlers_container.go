@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore, runtimeBackend string, allowedPrefixes []string, mirrorRules []imageMirrorRule, unixSocketPath string, trustInsecure bool) {
+func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore, runtimeBackend string, allowedPrefixes []string, mirrorRules []imageMirrorRule, unixSocketPath string, trustInsecure bool, ensureImage func(context.Context, string, string, *metrics, bool) (string, imageMeta, error)) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -27,6 +27,9 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 	if strings.TrimSpace(req.Image) == "" {
 		writeError(w, http.StatusBadRequest, "missing image")
 		return
+	}
+	if isRyukImage(req.Image) {
+		runtimeBackend = runtimeBackendHost
 	}
 	resolvedRef := rewriteImageReference(req.Image, mirrorRules)
 	if !isImageAllowed(resolvedRef, allowedPrefixes) {
@@ -230,6 +233,9 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	if c.Running {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	if isRyukImage(c.Image) {
+		runtimeBackend = runtimeBackendHost
 	}
 	if limits.maxConcurrent > 0 {
 		// Reconcile runtime count from persisted container state to avoid
