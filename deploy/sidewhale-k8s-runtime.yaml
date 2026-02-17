@@ -60,7 +60,7 @@ spec:
       serviceAccountName: sidewhale-runtime
       containers:
         - name: sidewhale
-          image: sidewhale:dev
+          image: obegron/sidewhale:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: POD_NAMESPACE
