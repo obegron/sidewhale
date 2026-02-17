@@ -41,7 +41,7 @@ Status legend:
 | Kafka (single container) | Partial | Some single-node flows can run; cluster scenarios are limited by DNS/network semantics. |
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
 | Cassandra | Partial | Hostname/name-resolution sensitivity observed (`UnknownHostException` patterns). |
-| Oracle Free | Unsupported | Not reliable under current `proot` constraints. |
+| Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
 | DB2 | Unsupported | Startup/instance setup constraints not satisfied under current runtime model. |
 | Compose-based tests | Unsupported | Compose/network feature set is intentionally out of scope. |
 | ImageFromDockerfile/build flows | Unsupported | Build API not in MVP scope. |

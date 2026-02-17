@@ -32,7 +32,7 @@ Current focus:
 
 - No registry auth management beyond pass-through headers from clients
 - Insecure registry configuration is not implemented as a runtime flag yet
-- Oracle image currently fails under `proot` due missing syscall behavior
+- Oracle image currently fails under `host` backend (proot) due missing syscall behavior; fully supported under `k8s` backend with automatic resource/probe injection.
 - Some clients may log noisy `Socket closed` traces when log-follow streams are closed
 - No support for many Docker APIs (networks, volumes, build, exec/attach parity, etc.)
 - Host backend only: no per-container network namespace or embedded DNS
