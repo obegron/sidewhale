@@ -45,8 +45,9 @@ type k8sPod struct {
 }
 
 type k8sContainerStatus struct {
-	Name  string `json:"name"`
-	State struct {
+	Name    string `json:"name"`
+	Started *bool  `json:"started,omitempty"`
+	State   struct {
 		Running *struct {
 			StartedAt string `json:"startedAt"`
 		} `json:"running,omitempty"`
@@ -160,6 +161,27 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			},
 		},
 	}
+
+	isOracle := isOracleImage(image)
+	if isOracle {
+		containerSpec["resources"] = map[string]interface{}{
+			"requests": map[string]string{"memory": "4Gi"},
+			"limits":   map[string]string{"memory": "4Gi"},
+		}
+		containerSpec["securityContext"] = map[string]interface{}{
+			"runAsUser":                54321,
+			"allowPrivilegeEscalation": false,
+		}
+		containerSpec["startupProbe"] = map[string]interface{}{
+			"exec": map[string]interface{}{
+				"command": []string{"/opt/oracle/healthcheck.sh"},
+			},
+			"initialDelaySeconds": 10,
+			"periodSeconds":       5,
+			"failureThreshold":    60,
+		}
+	}
+
 	if len(entrypoint) > 0 {
 		containerSpec["command"] = entrypoint
 	}
@@ -169,6 +191,26 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	if wd := strings.TrimSpace(c.WorkingDir); wd != "" {
 		containerSpec["workingDir"] = wd
 	}
+	
+	podSpec := map[string]interface{}{
+		"restartPolicy": "Never",
+		"containers":    []map[string]interface{}{containerSpec},
+		"volumes": []map[string]interface{}{
+			{
+				"name": "dshm",
+				"emptyDir": map[string]interface{}{
+					"medium":    "Memory",
+					"sizeLimit": "1Gi",
+				},
+			},
+		},
+	}
+	if isOracle {
+		podSpec["securityContext"] = map[string]interface{}{
+			"fsGroup": 54321,
+		}
+	}
+
 	pod := map[string]interface{}{
 		"apiVersion": "v1",
 		"kind":       "Pod",
@@ -181,19 +223,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 				"sidewhale.managed":      "true",
 			},
 		},
-		"spec": map[string]interface{}{
-			"restartPolicy": "Never",
-			"containers":    []map[string]interface{}{containerSpec},
-			"volumes": []map[string]interface{}{
-				{
-					"name": "dshm",
-					"emptyDir": map[string]interface{}{
-						"medium":    "Memory",
-						"sizeLimit": "1Gi",
-					},
-				},
-			},
-		},
+		"spec": podSpec,
 	}
 	if len(hostAliasMap) > 0 {
 		grouped := map[string][]string{}
@@ -220,7 +250,6 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 					"hostnames": names,
 				})
 			}
-			podSpec := pod["spec"].(map[string]interface{})
 			podSpec["hostAliases"] = hostAliases
 		}
 	}
@@ -234,7 +263,6 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			items = append(items, map[string]string{"name": s})
 		}
 		if len(items) > 0 {
-			podSpec := pod["spec"].(map[string]interface{})
 			podSpec["imagePullSecrets"] = items
 		}
 	}
@@ -318,9 +346,24 @@ func (k *k8sClient) waitForPodStarted(ctx context.Context, namespace, name strin
 		pod, err := k.getPod(ctx, namespace, name)
 		if err == nil {
 			state := podRuntimeState(pod)
+			// Wait for the container to be "Started" (passing startup probes)
+			// in addition to the Pod being Running.
+			allStarted := true
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == k8sRuntimeContainerName {
+					if cs.Started == nil || !*cs.Started {
+						allStarted = false
+					}
+					break
+				}
+			}
+
 			phase := strings.ToLower(strings.TrimSpace(pod.Status.Phase))
-			switch phase {
-			case "running", "succeeded", "failed":
+			if phase == "running" && allStarted {
+				return strings.TrimSpace(pod.Status.PodIP), state, nil
+			}
+			// If succeeded or failed, we can return immediately
+			if phase == "succeeded" || phase == "failed" {
 				return strings.TrimSpace(pod.Status.PodIP), state, nil
 			}
 		}
