@@ -121,19 +121,25 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 
 		switch h.Typeflag {
 		case tar.TypeDir:
+			// Check parent is safe before creating
+			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+				continue
+			}
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {
 				return fmt.Errorf("mkdir failed: %w", err)
 			}
+			// Verify the created directory itself resolves safely
 			if err := isDirSafe(rootfs, targetPath); err != nil {
+				_ = os.RemoveAll(targetPath)
 				continue
 			}
 			dirModes[targetPath] = dirAttributes{mode: fs.FileMode(h.Mode), modTime: h.ModTime}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
-			}
 			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
 			_ = os.RemoveAll(targetPath)
 			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
@@ -152,11 +158,11 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
-			}
 			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Symlink(h.Linkname, targetPath); err != nil {
@@ -172,11 +178,14 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				// log.Printf("Skipping potentially malicious hardlink target: %v", err)
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
+			if err := isDirSafe(rootfs, filepath.Dir(linkTarget)); err != nil {
+				continue
 			}
 			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Link(linkTarget, targetPath); err != nil {

@@ -311,18 +311,24 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 
 		switch h.Typeflag {
 		case tar.TypeDir:
+			// Check parent is safe before creating directory (to catch traversal via parent symlink)
+			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+				continue
+			}
 			if err := os.MkdirAll(target, fs.FileMode(h.Mode)); err != nil {
 				return nil, err
 			}
+			// Verify the created directory itself resolves safely (in case it became a symlink somehow)
 			if err := isDirSafe(dst, target); err != nil {
+				_ = os.RemoveAll(target)
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return nil, err
-			}
 			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
 			}
 			_ = os.RemoveAll(target)
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
@@ -342,11 +348,11 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return nil, err
-			}
 			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
 			}
 			_ = os.RemoveAll(target)
 			if err := os.Symlink(h.Linkname, target); err != nil {
@@ -363,11 +369,11 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return nil, err
-			}
 			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return nil, err
 			}
 			_ = os.RemoveAll(target)
 			if err := os.Link(linkTarget, target); err != nil {

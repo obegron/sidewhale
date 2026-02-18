@@ -28,19 +28,16 @@ func isPathWithinBase(basePath, fullPath string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to get absolute path for fullPath: %w", err)
 	}
-	// Clean both paths to normalize them (e.g., remove '..' components)
-	absBasePath = filepath.Clean(absBasePath)
-	absFullPath = filepath.Clean(absFullPath)
 
-	if absBasePath == absFullPath {
-		return true, nil
+	rel, err := filepath.Rel(absBasePath, absFullPath)
+	if err != nil {
+		return false, err
 	}
-	// Ensure the prefix match includes a separator to prevent partial name matching
-	// e.g. /tmp/foo shouldn't match /tmp/foobar
-	if strings.HasPrefix(absFullPath, absBasePath+string(os.PathSeparator)) {
-		return true, nil
+	// If the relative path starts with ".." it means it's outside.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false, nil
 	}
-	return false, nil
+	return true, nil
 }
 
 // isPathSafe joins basePath and targetPath, then checks if the resulting path is within basePath.
@@ -57,27 +54,38 @@ func isPathSafe(basePath, targetPath string) (string, error) {
 	return joinedPath, nil
 }
 
-// isDirSafe checks if the directory at dirPath (and its resolved path via symlinks)
+// isDirSafe checks if the directory at dirPath (or its deepest existing ancestor)
 // is contained within the allowed basePath. This guards against writing through
 // symlinks that point outside the sandbox.
 func isDirSafe(basePath, dirPath string) error {
-	resolvedDir, err := filepath.EvalSymlinks(dirPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// If it doesn't exist, we can't eval it, but that also means it's not a symlink yet.
-			// However, we should check the parent in that case?
-			// For simplicity in our use case (MkdirAll called before), we assume it exists or we check parent.
-			// If we are about to write to a file in dirPath, dirPath usually exists.
+	current := dirPath
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			// Path exists, check where it resolves
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return err
+			}
+			ok, err := isPathWithinBase(basePath, resolved)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("path '%s' resolves to '%s' which is outside base '%s'", current, resolved, basePath)
+			}
 			return nil
 		}
-		return err
-	}
-	ok, err := isPathWithinBase(basePath, resolvedDir)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("directory '%s' resolves to '%s' which is outside base '%s'", dirPath, resolvedDir, basePath)
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// Current path doesn't exist, check parent
+		parent := filepath.Dir(current)
+		if parent == current || parent == "." || parent == string(filepath.Separator) {
+			// We reached root or cannot go further up
+			break
+		}
+		current = parent
 	}
 	return nil
 }
