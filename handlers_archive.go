@@ -16,6 +16,37 @@ import (
 	"time"
 )
 
+// isSafeLinkTarget checks whether a link target from a tar header
+// resolves to a location within the provided destination directory.
+func isSafeLinkTarget(linkname, dst string) bool {
+	if filepath.IsAbs(linkname) {
+		return false
+	}
+
+	// Construct the intended target path under dst using '/' semantics
+	joined := filepath.Join(dst, filepath.FromSlash(linkname))
+
+	// Resolve symlinks on the filesystem to account for previously-extracted entries.
+	resolved, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		// If the path doesn't exist yet, fall back to its cleaned form.
+		resolved = filepath.Clean(joined)
+	}
+
+	rel, err := filepath.Rel(dst, resolved)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." {
+		return true
+	}
+	if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
+		return false
+	}
+	return true
+}
+
 func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
 	c, ok := store.get(id)
 	if !ok {
@@ -302,6 +333,10 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 		case tar.TypeSymlink:
+			if !isSafeLinkTarget(h.Linkname, dst) {
+				// Skip unsafe symlink targets that would escape dst.
+				continue
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
 			}
