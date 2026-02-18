@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -16,6 +17,71 @@ import (
 	"time"
 )
 
+// isPathWithinBase checks if a given fullPath is contained within basePath.
+// It resolves both paths to absolute paths for a robust comparison.
+func isPathWithinBase(basePath, fullPath string) (bool, error) {
+	absBasePath, err := filepath.Abs(basePath)
+	if err != nil {
+		return false, fmt.Errorf("failed to get absolute path for base: %w", err)
+	}
+	absFullPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to get absolute path for fullPath: %w", err)
+	}
+	// Clean both paths to normalize them (e.g., remove '..' components)
+	absBasePath = filepath.Clean(absBasePath)
+	absFullPath = filepath.Clean(absFullPath)
+
+	if absBasePath == absFullPath {
+		return true, nil
+	}
+	// Ensure the prefix match includes a separator to prevent partial name matching
+	// e.g. /tmp/foo shouldn't match /tmp/foobar
+	if strings.HasPrefix(absFullPath, absBasePath+string(os.PathSeparator)) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// isPathSafe joins basePath and targetPath, then checks if the resulting path is within basePath.
+// It returns the cleaned joined path or an error if path traversal is detected.
+func isPathSafe(basePath, targetPath string) (string, error) {
+	joinedPath := filepath.Clean(filepath.Join(basePath, targetPath))
+	ok, err := isPathWithinBase(basePath, joinedPath)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("path traversal attempt detected: '%s' resolves outside base directory '%s'", targetPath, basePath)
+	}
+	return joinedPath, nil
+}
+
+// isDirSafe checks if the directory at dirPath (and its resolved path via symlinks)
+// is contained within the allowed basePath. This guards against writing through
+// symlinks that point outside the sandbox.
+func isDirSafe(basePath, dirPath string) error {
+	resolvedDir, err := filepath.EvalSymlinks(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// If it doesn't exist, we can't eval it, but that also means it's not a symlink yet.
+			// However, we should check the parent in that case?
+			// For simplicity in our use case (MkdirAll called before), we assume it exists or we check parent.
+			// If we are about to write to a file in dirPath, dirPath usually exists.
+			return nil
+		}
+		return err
+	}
+	ok, err := isPathWithinBase(basePath, resolvedDir)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("directory '%s' resolves to '%s' which is outside base '%s'", dirPath, resolvedDir, basePath)
+	}
+	return nil
+}
+
 func copyDirContents(srcDir, dstDir string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
@@ -26,7 +92,12 @@ func copyDirContents(srcDir, dstDir string) error {
 	}
 	for _, entry := range entries {
 		src := filepath.Join(srcDir, entry.Name())
-		dst := filepath.Join(dstDir, entry.Name())
+		// Sanitize the destination path using isPathSafe
+		dst, err := isPathSafe(dstDir, entry.Name())
+		if err != nil {
+			// log.Printf("Skipping potentially malicious path during copy: %v", err)
+			continue // Skip this entry
+		}
 		if err := copyFSNode(src, dst); err != nil {
 			return err
 		}
@@ -59,7 +130,14 @@ func copyFSNode(src, dst string) error {
 			return err
 		}
 		for _, entry := range entries {
-			if err := copyFSNode(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+			childSrc := filepath.Join(src, entry.Name())
+			// Sanitize the destination path for recursive call
+			childDst, err := isPathSafe(dst, entry.Name())
+			if err != nil {
+				// log.Printf("Skipping potentially malicious path during recursive copy: %v", err)
+				continue // Skip this entry
+			}
+			if err := copyFSNode(childSrc, childDst); err != nil {
 				return err
 			}
 		}

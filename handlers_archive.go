@@ -18,33 +18,27 @@ import (
 
 // isSafeLinkTarget checks whether a link target from a tar header
 // resolves to a location within the provided destination directory.
-func isSafeLinkTarget(linkname, dst string) bool {
+func isSafeLinkTarget(linkname, symlinkTargetPath, dst string) (bool, error) {
+	// 1. Reject absolute link names directly.
 	if filepath.IsAbs(linkname) {
-		return false
+		return false, fmt.Errorf("absolute symlink target '%s' is not allowed", linkname)
 	}
 
-	// Construct the intended target path under dst using '/' semantics
-	joined := filepath.Join(dst, filepath.FromSlash(linkname))
+	// 2. Resolve linkname relative to the directory where the symlink itself will be placed.
+	//    symlinkTargetPath is the full path in the extraction directory where the symlink will be created.
+	symlinkDir := filepath.Dir(symlinkTargetPath)
+	resolvedLinkTarget := filepath.Clean(filepath.Join(symlinkDir, linkname))
 
-	// Resolve symlinks on the filesystem to account for previously-extracted entries.
-	resolved, err := filepath.EvalSymlinks(joined)
+	// 3. Use isPathWithinBase to check if this resolved target is within the overall extraction destination (dst).
+	ok, err := isPathWithinBase(dst, resolvedLinkTarget)
 	if err != nil {
-		// If the path doesn't exist yet, fall back to its cleaned form.
-		resolved = filepath.Clean(joined)
+		return false, fmt.Errorf("error checking symlink target safety: %w", err)
+	}
+	if !ok {
+		return false, fmt.Errorf("symlink target '%s' resolves outside base directory '%s'", linkname, dst)
 	}
 
-	rel, err := filepath.Rel(dst, resolved)
-	if err != nil {
-		return false
-	}
-	rel = filepath.Clean(rel)
-	if rel == "." {
-		return true
-	}
-	if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
-		return false
-	}
-	return true
+	return true, nil
 }
 
 func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
@@ -309,16 +303,26 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			continue
 		}
 		addTop(cleanName)
-		target := filepath.Join(dst, filepath.FromSlash(cleanName))
+		target, err := isPathSafe(dst, filepath.FromSlash(cleanName))
+		if err != nil {
+			// log.Printf("Skipping potentially malicious path in archive: %v", err)
+			continue // Skip this entry
+		}
 
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, fs.FileMode(h.Mode)); err != nil {
 				return nil, err
 			}
+			if err := isDirSafe(dst, target); err != nil {
+				continue
+			}
 		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
+			}
+			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(target)
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
@@ -333,12 +337,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 		case tar.TypeSymlink:
-			if !isSafeLinkTarget(h.Linkname, dst) {
-				// Skip unsafe symlink targets that would escape dst.
+			if ok, err := isSafeLinkTarget(h.Linkname, target, dst); !ok {
+				// Consider logging the error for debugging: log.Printf("Skipping unsafe symlink target: %v", err)
+				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
+			}
+			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(target)
 			if err := os.Symlink(h.Linkname, target); err != nil {
@@ -350,8 +358,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 			linkTarget := filepath.Join(dst, filepath.FromSlash(linkName))
+			// Check if the source of the hardlink is in a safe directory
+			if err := isDirSafe(dst, filepath.Dir(linkTarget)); err != nil {
+				continue
+			}
+
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
+			}
+			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(target)
 			if err := os.Link(linkTarget, target); err != nil {

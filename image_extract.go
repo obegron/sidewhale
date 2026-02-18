@@ -16,6 +16,30 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
+// isSymlinkTargetSafe checks if a symlink target (linkname) would resolve safely
+// within the rootfs when created at symlinkPath.
+func isSymlinkTargetSafe(linkname, symlinkPath, rootfs string) (bool, error) {
+	// 1. Reject absolute link names directly.
+	if filepath.IsAbs(linkname) {
+		return false, fmt.Errorf("absolute symlink target '%s' is not allowed", linkname)
+	}
+
+	// 2. Resolve linkname relative to the directory where the symlink itself will be placed.
+	symlinkDir := filepath.Dir(symlinkPath)
+	resolvedLinkTarget := filepath.Clean(filepath.Join(symlinkDir, linkname))
+
+	// 3. Use isPathWithinBase to check if this resolved target is within the overall rootfs.
+	ok, err := isPathWithinBase(rootfs, resolvedLinkTarget)
+	if err != nil {
+		return false, fmt.Errorf("error checking symlink target safety: %w", err)
+	}
+	if !ok {
+		return false, fmt.Errorf("symlink target '%s' resolves outside rootfs '%s'", linkname, rootfs)
+	}
+
+	return true, nil
+}
+
 func dirSize(root string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -64,19 +88,33 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 		if !ok {
 			continue
 		}
-		targetPath := filepath.Join(rootfs, cleanName)
+		targetPath, err := isPathSafe(rootfs, cleanName)
+		if err != nil {
+			// log.Printf("Skipping potentially malicious path in layer: %v", err)
+			continue // Skip this entry
+		}
 
 		base := filepath.Base(cleanName)
 		dir := filepath.Dir(cleanName)
 
 		if strings.HasPrefix(base, ".wh.") {
 			if base == ".wh..wh..opq" {
-				if err := removeAllChildren(filepath.Join(rootfs, dir)); err != nil {
+				cleanDirForRemoval, err := isPathSafe(rootfs, dir)
+				if err != nil {
+					// log.Printf("Skipping removal of potentially malicious directory: %v", err)
+					continue
+				}
+				if err := removeAllChildren(cleanDirForRemoval); err != nil {
 					return fmt.Errorf("whiteout opaque failed: %w", err)
 				}
 				continue
 			}
-			removeTarget := filepath.Join(rootfs, dir, strings.TrimPrefix(base, ".wh."))
+			removeTargetRaw := filepath.Join(dir, strings.TrimPrefix(base, ".wh."))
+			removeTarget, err := isPathSafe(rootfs, removeTargetRaw)
+			if err != nil {
+				// log.Printf("Skipping removal of potentially malicious whiteout target: %v", err)
+				continue
+			}
 			_ = os.RemoveAll(removeTarget)
 			continue
 		}
@@ -86,10 +124,16 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {
 				return fmt.Errorf("mkdir failed: %w", err)
 			}
+			if err := isDirSafe(rootfs, targetPath); err != nil {
+				continue
+			}
 			dirModes[targetPath] = dirAttributes{mode: fs.FileMode(h.Mode), modTime: h.ModTime}
 		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("parent mkdir failed: %w", err)
+			}
+			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
 			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
@@ -103,8 +147,16 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			f.Close()
 			_ = os.Chtimes(targetPath, time.Now(), h.ModTime)
 		case tar.TypeSymlink:
+			if ok, err := isSymlinkTargetSafe(h.Linkname, targetPath, rootfs); !ok {
+				// Consider logging the error for debugging: log.Printf("Skipping unsafe symlink target: %v", err)
+				_ = err // Mark err as used to suppress compiler warning
+				continue
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("parent mkdir failed: %w", err)
+			}
+			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Symlink(h.Linkname, targetPath); err != nil {
@@ -115,9 +167,16 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if !ok {
 				continue
 			}
-			linkTarget := filepath.Join(rootfs, linkName)
+			linkTarget, err := isPathSafe(rootfs, linkName)
+			if err != nil {
+				// log.Printf("Skipping potentially malicious hardlink target: %v", err)
+				continue
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("parent mkdir failed: %w", err)
+			}
+			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Link(linkTarget, targetPath); err != nil {
