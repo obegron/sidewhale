@@ -363,7 +363,11 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if !ok {
 				continue
 			}
-			linkTarget := filepath.Join(dst, filepath.FromSlash(linkName))
+			linkTarget, err := isPathSafe(dst, filepath.FromSlash(linkName))
+			if err != nil {
+				// log.Printf("Skipping potentially malicious hardlink source in archive: %v", err)
+				continue
+			}
 			// Check if the source of the hardlink is in a safe directory
 			if err := isDirSafe(dst, filepath.Dir(linkTarget)); err != nil {
 				continue
