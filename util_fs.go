@@ -58,8 +58,23 @@ func isPathSafe(basePath, targetPath string) (string, error) {
 // is contained within the allowed basePath. This guards against writing through
 // symlinks that point outside the sandbox.
 func isDirSafe(basePath, dirPath string) error {
+	// 1. Initial syntactic check to ensure we are starting with a valid path
+	if ok, err := isPathWithinBase(basePath, dirPath); err != nil || !ok {
+		return fmt.Errorf("initial path '%s' is not within base '%s'", dirPath, basePath)
+	}
+
 	current := dirPath
 	for {
+		// 2. Strict syntactic check in loop: Ensure the path we are about to Lstat
+		// is still within the base. This prevents walking up past the root of the sandbox.
+		if ok, err := isPathWithinBase(basePath, current); err != nil {
+			return err
+		} else if !ok {
+			// We have traversed up to a parent that is no longer within the base path.
+			// Stop the check here; we don't validate outside the sandbox.
+			break
+		}
+
 		_, err := os.Lstat(current)
 		if err == nil {
 			// Path exists, check where it resolves
@@ -82,7 +97,7 @@ func isDirSafe(basePath, dirPath string) error {
 		// Current path doesn't exist, check parent
 		parent := filepath.Dir(current)
 		if parent == current || parent == "." || parent == string(filepath.Separator) {
-			// We reached root or cannot go further up
+			// Reached root or cannot go further up
 			break
 		}
 		current = parent
