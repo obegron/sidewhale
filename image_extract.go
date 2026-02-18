@@ -238,6 +238,27 @@ func normalizeLayerPath(name string) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
+	// "Zip Slip" remediation: Explicitly reject any path containing ".." components.
+	// While path.Clean handles this lexically, CodeQL and strict security practices
+	// prefer explicit rejection of malicious patterns in archive paths.
+	if strings.Contains(raw, "..") {
+		parts := strings.Split(raw, "/")
+		for _, part := range parts {
+			if part == ".." {
+				return "", false
+			}
+		}
+		// Also check backslash for Windows-style paths if they sneak in
+		if strings.Contains(raw, "\\") {
+			partsBack := strings.Split(raw, "\\")
+			for _, part := range partsBack {
+				if part == ".." {
+					return "", false
+				}
+			}
+		}
+	}
+
 	cleanRaw := path.Clean(raw)
 	if cleanRaw == "." || cleanRaw == ".." || strings.HasPrefix(cleanRaw, "../") {
 		return "", false
