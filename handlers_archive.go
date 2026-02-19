@@ -182,6 +182,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 
 	info, statErr := os.Stat(targetPath)
 	targetExists := statErr == nil
+	targetBase := mapArchivePath(targetPath, mapDst)
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		return statErr
 	}
@@ -190,7 +191,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(mapArchivePath(targetPath, mapDst), 0o755); err != nil {
+		if err := os.MkdirAll(targetBase, 0o755); err != nil {
 			return err
 		}
 		// Docker archive extraction into an existing directory behaves like "extract contents".
@@ -204,7 +205,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 			for _, entry := range innerEntries {
 				src := filepath.Join(tmpDir, entries[0].Name(), entry.Name())
 				dst := filepath.Join(targetPath, entry.Name())
-				if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+				if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 					return err
 				}
 			}
@@ -213,16 +214,16 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 		for _, entry := range entries {
 			src := filepath.Join(tmpDir, entry.Name())
 			dst := filepath.Join(targetPath, entry.Name())
-			if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+			if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	if len(top) == 1 {
-		return copyFSNode(filepath.Join(tmpDir, top[0]), mapArchivePath(targetPath, mapDst))
+		return copyFSNode(filepath.Join(tmpDir, top[0]), targetBase, targetBase)
 	}
-	if err := os.MkdirAll(mapArchivePath(targetPath, mapDst), 0o755); err != nil {
+	if err := os.MkdirAll(targetBase, 0o755); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(tmpDir)
@@ -232,7 +233,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 	for _, entry := range entries {
 		src := filepath.Join(tmpDir, entry.Name())
 		dst := filepath.Join(targetPath, entry.Name())
-		if err := copyFSNode(src, mapArchivePath(dst, mapDst)); err != nil {
+		if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 			return err
 		}
 	}
@@ -303,9 +304,12 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			continue
 		}
 		addTop(cleanName)
-		// Pre-sanitize target using cleanName for CodeQL happiness
-		safeTarget, err := isPathSafe(dst, cleanName)
+		// Resolve target under destination with explicit relative-path containment proof.
+		safeTarget, err := resolvePathUnder(dst, filepath.FromSlash(cleanName))
 		if err != nil {
+			continue
+		}
+		if err := ensurePathUnderBase(dst, safeTarget); err != nil {
 			continue
 		}
 
@@ -313,6 +317,9 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 		case tar.TypeDir:
 			// Check parent is safe before creating directory (to catch traversal via parent symlink)
 			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+				continue
+			}
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
 				continue
 			}
 			if err := os.MkdirAll(safeTarget, fs.FileMode(h.Mode)); err != nil {
@@ -324,13 +331,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			if _, err := ensureParentDir(dst, safeTarget); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
-				return nil, err
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(safeTarget)
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
+				continue
+			}
 			f, err := os.OpenFile(safeTarget, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
 			if err != nil {
 				return nil, err
@@ -348,11 +358,11 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			if _, err := ensureParentDir(dst, safeTarget); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
-				return nil, err
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(safeTarget)
 			if err := os.Symlink(h.Linkname, safeTarget); err != nil {
@@ -363,9 +373,12 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if !ok {
 				continue
 			}
-			safeLinkTarget, err := isPathSafe(dst, filepath.FromSlash(linkName))
+			safeLinkTarget, err := resolvePathUnder(dst, filepath.FromSlash(linkName))
 			if err != nil {
 				// log.Printf("Skipping potentially malicious hardlink source in archive: %v", err)
+				continue
+			}
+			if err := ensurePathUnderBase(dst, safeLinkTarget); err != nil {
 				continue
 			}
 			// Check if the source of the hardlink is in a safe directory
@@ -373,28 +386,20 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			if _, err := ensureParentDir(dst, safeTarget); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
-				return nil, err
-			}
 			// Final safety check before removing: ensure safeTarget is still within dst
-			if ok, err := isPathWithinBase(dst, safeTarget); err != nil || !ok {
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
 				continue
 			}
 			_ = os.RemoveAll(safeTarget)
-
-			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
-			relLink, err := filepath.Rel(dst, safeLinkTarget)
-			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
+			if err := ensurePathUnderBase(dst, safeTarget); err != nil {
 				continue
 			}
-			relSafeTarget, err := filepath.Rel(dst, safeTarget)
-			if err != nil || strings.HasPrefix(relSafeTarget, "..") || strings.HasPrefix(relSafeTarget, "/") || filepath.IsAbs(relSafeTarget) {
+			if err := ensurePathUnderBase(dst, safeLinkTarget); err != nil {
 				continue
 			}
-
 			if err := os.Link(safeLinkTarget, safeTarget); err != nil {
 				return nil, err
 			}
