@@ -379,6 +379,10 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return nil, err
 			}
+			// Final safety check before removing: ensure safeTarget is still within dst
+			if ok, err := isPathWithinBase(dst, safeTarget); err != nil || !ok {
+				continue
+			}
 			_ = os.RemoveAll(safeTarget)
 
 			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
