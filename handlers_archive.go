@@ -324,10 +324,14 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
+			if err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
+			if err := isDirSafe(dst, safeParentTarget); err != nil {
+				continue
+			}
+			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return nil, err
 			}
 			_ = os.RemoveAll(safeTarget)
@@ -348,10 +352,14 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
+			if err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
+			if err := isDirSafe(dst, safeParentTarget); err != nil {
+				continue
+			}
+			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return nil, err
 			}
 			_ = os.RemoveAll(safeTarget)
@@ -373,10 +381,14 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 
-			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
+			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
+			if err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
+			if err := isDirSafe(dst, safeParentTarget); err != nil {
+				continue
+			}
+			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return nil, err
 			}
 			// Final safety check before removing: ensure safeTarget is still within dst
@@ -384,16 +396,6 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 			_ = os.RemoveAll(safeTarget)
-
-			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
-			relLink, err := filepath.Rel(dst, safeLinkTarget)
-			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
-				continue
-			}
-			relSafeTarget, err := filepath.Rel(dst, safeTarget)
-			if err != nil || strings.HasPrefix(relSafeTarget, "..") || strings.HasPrefix(relSafeTarget, "/") || filepath.IsAbs(relSafeTarget) {
-				continue
-			}
 
 			if err := os.Link(safeLinkTarget, safeTarget); err != nil {
 				return nil, err
