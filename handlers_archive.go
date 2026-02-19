@@ -315,12 +315,17 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(target, fs.FileMode(h.Mode)); err != nil {
+			// Re-sanitize target for CodeQL using the original clean relative path
+			safeTarget, err := isPathSafe(dst, cleanName)
+			if err != nil {
+				continue
+			}
+			if err := os.MkdirAll(safeTarget, fs.FileMode(h.Mode)); err != nil {
 				return nil, err
 			}
 			// Verify the created directory itself resolves safely (in case it became a symlink somehow)
-			if err := isDirSafe(dst, target); err != nil {
-				_ = os.RemoveAll(target)
+			if err := isDirSafe(dst, safeTarget); err != nil {
+				_ = os.RemoveAll(safeTarget)
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
@@ -331,7 +336,12 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 			_ = os.RemoveAll(target)
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
+			// Re-sanitize target for CodeQL
+			safeTarget, err := isPathSafe(dst, cleanName)
+			if err != nil {
+				continue
+			}
+			f, err := os.OpenFile(safeTarget, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
 			if err != nil {
 				return nil, err
 			}
@@ -355,7 +365,12 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 			_ = os.RemoveAll(target)
-			if err := os.Symlink(h.Linkname, target); err != nil {
+			// Re-sanitize target for CodeQL
+			safeTarget, err := isPathSafe(dst, cleanName)
+			if err != nil {
+				continue
+			}
+			if err := os.Symlink(h.Linkname, safeTarget); err != nil {
 				return nil, err
 			}
 		case tar.TypeLink:
@@ -380,7 +395,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 			_ = os.RemoveAll(target)
-			if err := os.Link(linkTarget, target); err != nil {
+			// Re-sanitize target and linkTarget for CodeQL
+			safeTarget, err := isPathSafe(dst, cleanName)
+			if err != nil {
+				continue
+			}
+			// linkTarget is already safe from line 366 (in snippet logic), but let's re-verify to be consistent with pattern
+			// Actually linkTarget variable above IS the result of isPathSafe.
+			// Just usage of safeTarget is enough fix for target.
+			
+			if err := os.Link(linkTarget, safeTarget); err != nil {
 				return nil, err
 			}
 		default:
