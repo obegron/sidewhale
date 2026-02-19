@@ -142,6 +142,10 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
 				continue
 			}
+			relParent, err := filepath.Rel(rootfs, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
+				continue
+			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
@@ -169,6 +173,10 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
 				continue
 			}
+			relParent, err := filepath.Rel(rootfs, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
+				continue
+			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
@@ -194,6 +202,10 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				continue
 			}
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
+				continue
+			}
+			relParent, err := filepath.Rel(rootfs, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
 				continue
 			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {

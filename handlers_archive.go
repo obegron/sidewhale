@@ -331,6 +331,10 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if err := isDirSafe(dst, safeParentTarget); err != nil {
 				continue
 			}
+			relParent, err := filepath.Rel(dst, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
+				continue
+			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
 				return nil, err
 			}
@@ -357,6 +361,10 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 			if err := isDirSafe(dst, safeParentTarget); err != nil {
+				continue
+			}
+			relParent, err := filepath.Rel(dst, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
 				continue
 			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
@@ -386,6 +394,10 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 			if err := isDirSafe(dst, safeParentTarget); err != nil {
+				continue
+			}
+			relParent, err := filepath.Rel(dst, safeParentTarget)
+			if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(filepath.Separator)) || filepath.IsAbs(relParent) {
 				continue
 			}
 			if err := os.MkdirAll(safeParentTarget, 0o755); err != nil {
