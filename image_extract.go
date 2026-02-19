@@ -135,11 +135,11 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			}
 			dirModes[targetPath] = dirAttributes{mode: fs.FileMode(h.Mode), modTime: h.ModTime}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+			if _, err := ensureParentDir(rootfs, targetPath); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
+			if err := ensurePathUnderBase(rootfs, targetPath); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
 			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
@@ -158,11 +158,11 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+			if _, err := ensureParentDir(rootfs, targetPath); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
+			if err := ensurePathUnderBase(rootfs, targetPath); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Symlink(h.Linkname, targetPath); err != nil {
@@ -181,23 +181,13 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if err := isDirSafe(rootfs, filepath.Dir(linkTarget)); err != nil {
 				continue
 			}
-			if err := isDirSafe(rootfs, filepath.Dir(targetPath)); err != nil {
+			if _, err := ensureParentDir(rootfs, targetPath); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("parent mkdir failed: %w", err)
+			if err := ensurePathUnderBase(rootfs, targetPath); err != nil {
+				continue
 			}
 			_ = os.RemoveAll(targetPath)
-
-			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
-			relLink, err := filepath.Rel(rootfs, linkTarget)
-			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
-				continue
-			}
-			relTarget, err := filepath.Rel(rootfs, targetPath)
-			if err != nil || strings.HasPrefix(relTarget, "..") || strings.HasPrefix(relTarget, "/") || filepath.IsAbs(relTarget) {
-				continue
-			}
 
 			if err := os.Link(linkTarget, targetPath); err != nil {
 				src, openErr := os.Open(linkTarget)

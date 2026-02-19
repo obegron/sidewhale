@@ -54,6 +54,40 @@ func isPathSafe(basePath, targetPath string) (string, error) {
 	return joinedPath, nil
 }
 
+// ensurePathUnderBase performs strict containment checks used before filesystem sinks.
+func ensurePathUnderBase(basePath, fullPath string) error {
+	ok, err := isPathWithinBase(basePath, fullPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("path '%s' is outside base '%s'", fullPath, basePath)
+	}
+	rel, err := filepath.Rel(basePath, fullPath)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path '%s' escapes base '%s'", fullPath, basePath)
+	}
+	return nil
+}
+
+// ensureParentDir ensures target's parent is safe and exists under basePath.
+func ensureParentDir(basePath, target string) (string, error) {
+	parent := filepath.Dir(target)
+	if err := ensurePathUnderBase(basePath, parent); err != nil {
+		return "", err
+	}
+	if err := isDirSafe(basePath, parent); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", err
+	}
+	return parent, nil
+}
+
 // isDirSafe checks if the directory at dirPath (or its deepest existing ancestor)
 // is contained within the allowed basePath. This guards against writing through
 // symlinks that point outside the sandbox.
@@ -76,6 +110,10 @@ func isDirSafe(basePath, dirPath string) error {
 		}
 
 		_, err := os.Lstat(current)
+		relCurrent, relErr := filepath.Rel(basePath, current)
+		if relErr != nil || relCurrent == ".." || strings.HasPrefix(relCurrent, ".."+string(filepath.Separator)) || filepath.IsAbs(relCurrent) {
+			return fmt.Errorf("path '%s' escapes base '%s'", current, basePath)
+		}
 		if err == nil {
 			// Path exists, check where it resolves
 			resolved, err := filepath.EvalSymlinks(current)
@@ -121,32 +159,55 @@ func copyDirContents(srcDir, dstDir string) error {
 			// log.Printf("Skipping potentially malicious path during copy: %v", err)
 			continue // Skip this entry
 		}
-		if err := copyFSNode(src, dst); err != nil {
+		if err := copyFSNode(src, dstDir, dst); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyFSNode(src, dst string) error {
+func copyFSNode(src, dstBase, dst string) error {
+	if err := ensurePathUnderBase(dstBase, dst); err != nil {
+		return fmt.Errorf("destination path escapes base: %w", err)
+	}
+
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
+		relSrc, err := filepath.Rel(filepath.Dir(src), src)
+		if err != nil || relSrc == ".." || strings.HasPrefix(relSrc, ".."+string(filepath.Separator)) || filepath.IsAbs(relSrc) {
+			return fmt.Errorf("source path escapes expected directory")
+		}
 		link, err := os.Readlink(src)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		parentDst := filepath.Dir(dst)
+		if err := ensurePathUnderBase(dstBase, parentDst); err != nil {
+			return fmt.Errorf("destination parent escapes base: %w", err)
+		}
+		if err := os.MkdirAll(parentDst, 0o755); err != nil {
 			return err
 		}
 		_ = os.RemoveAll(dst)
 		return os.Symlink(link, dst)
 	case info.IsDir():
+		if err := ensurePathUnderBase(dstBase, dst); err != nil {
+			return fmt.Errorf("destination directory escapes base: %w", err)
+		}
+		relDirDst, err := filepath.Rel(dstBase, dst)
+		if err != nil || relDirDst == ".." || strings.HasPrefix(relDirDst, ".."+string(filepath.Separator)) || filepath.IsAbs(relDirDst) {
+			return fmt.Errorf("destination directory escapes base")
+		}
 		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
 			return err
+		}
+		relReadDirSrc, err := filepath.Rel(filepath.Dir(src), src)
+		if err != nil || relReadDirSrc == ".." || strings.HasPrefix(relReadDirSrc, ".."+string(filepath.Separator)) || filepath.IsAbs(relReadDirSrc) {
+			return fmt.Errorf("source directory escapes expected directory")
 		}
 		entries, err := os.ReadDir(src)
 		if err != nil {
@@ -160,16 +221,24 @@ func copyFSNode(src, dst string) error {
 				// log.Printf("Skipping potentially malicious path during recursive copy: %v", err)
 				continue // Skip this entry
 			}
-			if err := copyFSNode(childSrc, childDst); err != nil {
+			if err := copyFSNode(childSrc, dstBase, childDst); err != nil {
 				return err
 			}
 		}
 		return os.Chmod(dst, info.Mode().Perm())
 	case info.Mode().IsRegular():
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		parentDst := filepath.Dir(dst)
+		if err := ensurePathUnderBase(dstBase, parentDst); err != nil {
+			return fmt.Errorf("destination parent escapes base: %w", err)
+		}
+		if err := os.MkdirAll(parentDst, 0o755); err != nil {
 			return err
 		}
 		_ = os.RemoveAll(dst)
+		relOpenSrc, err := filepath.Rel(filepath.Dir(src), src)
+		if err != nil || relOpenSrc == ".." || strings.HasPrefix(relOpenSrc, ".."+string(filepath.Separator)) || filepath.IsAbs(relOpenSrc) {
+			return fmt.Errorf("source file escapes expected directory")
+		}
 		in, err := os.Open(src)
 		if err != nil {
 			return err
