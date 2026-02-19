@@ -303,21 +303,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			continue
 		}
 		addTop(cleanName)
-		target, err := isPathSafe(dst, filepath.FromSlash(cleanName))
+		// Pre-sanitize target using cleanName for CodeQL happiness
+		safeTarget, err := isPathSafe(dst, cleanName)
 		if err != nil {
-			// log.Printf("Skipping potentially malicious path in archive: %v", err)
-			continue // Skip this entry
+			continue
 		}
 
 		switch h.Typeflag {
 		case tar.TypeDir:
 			// Check parent is safe before creating directory (to catch traversal via parent symlink)
-			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
-				continue
-			}
-			// Re-sanitize target for CodeQL using the original clean relative path
-			safeTarget, err := isPathSafe(dst, cleanName)
-			if err != nil {
+			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
 				continue
 			}
 			if err := os.MkdirAll(safeTarget, fs.FileMode(h.Mode)); err != nil {
@@ -329,18 +324,13 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return nil, err
 			}
-			_ = os.RemoveAll(target)
-			// Re-sanitize target for CodeQL
-			safeTarget, err := isPathSafe(dst, cleanName)
-			if err != nil {
-				continue
-			}
+			_ = os.RemoveAll(safeTarget)
 			f, err := os.OpenFile(safeTarget, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(h.Mode))
 			if err != nil {
 				return nil, err
@@ -353,23 +343,18 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 		case tar.TypeSymlink:
-			if ok, err := isSafeLinkTarget(h.Linkname, target, dst); !ok {
+			if ok, err := isSafeLinkTarget(h.Linkname, safeTarget, dst); !ok {
 				// Consider logging the error for debugging: log.Printf("Skipping unsafe symlink target: %v", err)
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return nil, err
 			}
-			_ = os.RemoveAll(target)
-			// Re-sanitize target for CodeQL
-			safeTarget, err := isPathSafe(dst, cleanName)
-			if err != nil {
-				continue
-			}
+			_ = os.RemoveAll(safeTarget)
 			if err := os.Symlink(h.Linkname, safeTarget); err != nil {
 				return nil, err
 			}
@@ -378,34 +363,26 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if !ok {
 				continue
 			}
-			linkTarget, err := isPathSafe(dst, filepath.FromSlash(linkName))
+			safeLinkTarget, err := isPathSafe(dst, filepath.FromSlash(linkName))
 			if err != nil {
 				// log.Printf("Skipping potentially malicious hardlink source in archive: %v", err)
 				continue
 			}
 			// Check if the source of the hardlink is in a safe directory
-			if err := isDirSafe(dst, filepath.Dir(linkTarget)); err != nil {
+			if err := isDirSafe(dst, filepath.Dir(safeLinkTarget)); err != nil {
 				continue
 			}
 
-			if err := isDirSafe(dst, filepath.Dir(target)); err != nil {
+			if err := isDirSafe(dst, filepath.Dir(safeTarget)); err != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return nil, err
 			}
-			_ = os.RemoveAll(target)
-			// Re-sanitize target and linkTarget for CodeQL
-			safeTarget, err := isPathSafe(dst, cleanName)
-			if err != nil {
-				continue
-			}
-			// linkTarget is already safe from line 366 (in snippet logic), but let's re-verify to be consistent with pattern
-			// Actually linkTarget variable above IS the result of isPathSafe.
-			// Just usage of safeTarget is enough fix for target.
-			
+			_ = os.RemoveAll(safeTarget)
+
 			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
-			relLink, err := filepath.Rel(dst, linkTarget)
+			relLink, err := filepath.Rel(dst, safeLinkTarget)
 			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
 				continue
 			}
@@ -414,7 +391,7 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 
-			if err := os.Link(linkTarget, safeTarget); err != nil {
+			if err := os.Link(safeLinkTarget, safeTarget); err != nil {
 				return nil, err
 			}
 		default:
