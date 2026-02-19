@@ -404,6 +404,16 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			// Actually linkTarget variable above IS the result of isPathSafe.
 			// Just usage of safeTarget is enough fix for target.
 			
+			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
+			relLink, err := filepath.Rel(dst, linkTarget)
+			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
+				continue
+			}
+			relSafeTarget, err := filepath.Rel(dst, safeTarget)
+			if err != nil || strings.HasPrefix(relSafeTarget, "..") || strings.HasPrefix(relSafeTarget, "/") || filepath.IsAbs(relSafeTarget) {
+				continue
+			}
+
 			if err := os.Link(linkTarget, safeTarget); err != nil {
 				return nil, err
 			}

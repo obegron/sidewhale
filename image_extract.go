@@ -188,6 +188,17 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				return fmt.Errorf("parent mkdir failed: %w", err)
 			}
 			_ = os.RemoveAll(targetPath)
+
+			// CodeQL Taint Breaker: Explicitly verify containment using filepath.Rel locally
+			relLink, err := filepath.Rel(rootfs, linkTarget)
+			if err != nil || strings.HasPrefix(relLink, "..") || strings.HasPrefix(relLink, "/") || filepath.IsAbs(relLink) {
+				continue
+			}
+			relTarget, err := filepath.Rel(rootfs, targetPath)
+			if err != nil || strings.HasPrefix(relTarget, "..") || strings.HasPrefix(relTarget, "/") || filepath.IsAbs(relTarget) {
+				continue
+			}
+
 			if err := os.Link(linkTarget, targetPath); err != nil {
 				src, openErr := os.Open(linkTarget)
 				if openErr != nil {
