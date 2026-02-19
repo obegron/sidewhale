@@ -324,8 +324,8 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(safeTarget)
+			if ok, err := isPathWithinBase(dst, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(dst, safeParentTarget); err != nil {
@@ -352,8 +352,8 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(safeTarget)
+			if ok, err := isPathWithinBase(dst, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(dst, safeParentTarget); err != nil {
@@ -381,8 +381,8 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 
-			safeParentTarget, err := isPathSafe(dst, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(safeTarget)
+			if ok, err := isPathWithinBase(dst, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(dst, safeParentTarget); err != nil {

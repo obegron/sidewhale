@@ -135,8 +135,8 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			}
 			dirModes[targetPath] = dirAttributes{mode: fs.FileMode(h.Mode), modTime: h.ModTime}
 		case tar.TypeReg, tar.TypeRegA:
-			safeParentTarget, err := isPathSafe(rootfs, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(targetPath)
+			if ok, err := isPathWithinBase(rootfs, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
@@ -162,8 +162,8 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				_ = err // Mark err as used to suppress compiler warning
 				continue
 			}
-			safeParentTarget, err := isPathSafe(rootfs, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(targetPath)
+			if ok, err := isPathWithinBase(rootfs, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
@@ -189,8 +189,8 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			if err := isDirSafe(rootfs, filepath.Dir(linkTarget)); err != nil {
 				continue
 			}
-			safeParentTarget, err := isPathSafe(rootfs, filepath.Dir(cleanName))
-			if err != nil {
+			safeParentTarget := filepath.Dir(targetPath)
+			if ok, err := isPathWithinBase(rootfs, safeParentTarget); err != nil || !ok {
 				continue
 			}
 			if err := isDirSafe(rootfs, safeParentTarget); err != nil {
