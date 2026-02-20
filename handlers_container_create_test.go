@@ -110,6 +110,50 @@ func TestHandleCreateRyukForcedHostBackend(t *testing.T) {
 	}
 }
 
+func TestHandleCreateOracleRejectedOnHostBackend(t *testing.T) {
+	store := &containerStore{
+		containers: map[string]*Container{},
+		networks:   map[string]*Network{},
+		execs:      map[string]*ExecInstance{},
+		proxies:    map[string][]*portProxy{},
+		stateDir:   t.TempDir(),
+	}
+	if err := store.init(); err != nil {
+		t.Fatalf("store init: %v", err)
+	}
+
+	body := `{"Image":"oracle/database:21"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	mockPuller := func(_ context.Context, _ string, _ string, _ *metrics, _ bool) (string, imageMeta, error) {
+		return t.TempDir(), imageMeta{}, nil
+	}
+
+	handleCreate(
+		rec,
+		req,
+		store,
+		runtimeBackendHost,
+		nil,
+		nil,
+		"",
+		false,
+		mockPuller,
+	)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	msg := strings.TrimSpace(parseJSONField(rec.Body.String(), "message"))
+	if !strings.Contains(strings.ToLower(msg), "not supported") || !strings.Contains(msg, "k8s") {
+		t.Fatalf("message = %q, want guidance to use k8s backend", msg)
+	}
+	if len(store.listContainers()) != 0 {
+		t.Fatalf("expected no container to be created, got %d", len(store.listContainers()))
+	}
+}
+
 func parseJSONField(body string, key string) string {
 	needle := `"` + key + `":"`
 	idx := strings.Index(body, needle)

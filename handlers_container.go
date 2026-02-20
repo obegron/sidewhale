@@ -36,6 +36,10 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusForbidden, "image not allowed by policy")
 		return
 	}
+	if runtimeBackend == runtimeBackendHost && (isOracleImage(req.Image) || isOracleImage(resolvedRef)) {
+		writeError(w, http.StatusBadRequest, "oracle images are not supported on host/proot backend; use --runtime-backend=k8s")
+		return
+	}
 	name := normalizeContainerName(r.URL.Query().Get("name"))
 	if name != "" && store.nameInUse(name) {
 		writeError(w, http.StatusConflict, "container name already in use")
