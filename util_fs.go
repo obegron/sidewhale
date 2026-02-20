@@ -159,14 +159,22 @@ func copyDirContents(srcDir, dstDir string) error {
 			// log.Printf("Skipping potentially malicious path during copy: %v", err)
 			continue // Skip this entry
 		}
-		if err := copyFSNode(src, dstDir, dst); err != nil {
+		if err := copyFSNode(srcDir, src, dstDir, dst); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyFSNode(src, dstBase, dst string) error {
+func copyFSNode(srcBase, src, dstBase, dst string) error {
+	if err := ensurePathUnderBase(srcBase, src); err != nil {
+		return fmt.Errorf("source path escapes base: %w", err)
+	}
+	relSrc, err := filepath.Rel(srcBase, src)
+	if err != nil || relSrc == ".." || strings.HasPrefix(relSrc, ".."+string(filepath.Separator)) || filepath.IsAbs(relSrc) {
+		return fmt.Errorf("source path escapes base")
+	}
+
 	if err := ensurePathUnderBase(dstBase, dst); err != nil {
 		return fmt.Errorf("destination path escapes base: %w", err)
 	}
@@ -221,7 +229,7 @@ func copyFSNode(src, dstBase, dst string) error {
 				// log.Printf("Skipping potentially malicious path during recursive copy: %v", err)
 				continue // Skip this entry
 			}
-			if err := copyFSNode(childSrc, dstBase, childDst); err != nil {
+			if err := copyFSNode(srcBase, childSrc, dstBase, childDst); err != nil {
 				return err
 			}
 		}

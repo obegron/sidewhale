@@ -205,7 +205,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 			for _, entry := range innerEntries {
 				src := filepath.Join(tmpDir, entries[0].Name(), entry.Name())
 				dst := filepath.Join(targetPath, entry.Name())
-				if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+				if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 					return err
 				}
 			}
@@ -214,14 +214,14 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 		for _, entry := range entries {
 			src := filepath.Join(tmpDir, entry.Name())
 			dst := filepath.Join(targetPath, entry.Name())
-			if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+			if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	if len(top) == 1 {
-		return copyFSNode(filepath.Join(tmpDir, top[0]), targetBase, targetBase)
+		return copyFSNode(tmpDir, filepath.Join(tmpDir, top[0]), targetBase, targetBase)
 	}
 	if err := os.MkdirAll(targetBase, 0o755); err != nil {
 		return err
@@ -233,7 +233,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 	for _, entry := range entries {
 		src := filepath.Join(tmpDir, entry.Name())
 		dst := filepath.Join(targetPath, entry.Name())
-		if err := copyFSNode(src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+		if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
 			return err
 		}
 	}
@@ -373,7 +373,19 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				continue
 			}
 			_ = os.RemoveAll(safeTarget)
-			if err := os.Symlink(h.Linkname, safeTarget); err != nil {
+			absDst, err := filepath.Abs(dst)
+			if err != nil {
+				continue
+			}
+			absTarget, err := filepath.Abs(safeTarget)
+			if err != nil {
+				continue
+			}
+			relTarget, err := filepath.Rel(absDst, absTarget)
+			if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relTarget) {
+				continue
+			}
+			if err := os.Symlink(h.Linkname, absTarget); err != nil {
 				return nil, err
 			}
 		case tar.TypeLink:
