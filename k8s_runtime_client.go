@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -122,33 +121,13 @@ func newInClusterK8sClient() (*k8sClient, error) {
 }
 
 func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap map[string]string) (string, error) {
-	image := strings.TrimSpace(c.ResolvedImage)
-	if image == "" {
-		image = strings.TrimSpace(c.Image)
-	}
+	image := containerRuntimeImage(c)
 	if image == "" {
 		return "", fmt.Errorf("missing image")
 	}
 	podName := "sidewhale-" + c.ID
-	entrypoint := append([]string{}, c.Entrypoint...)
-	args := append([]string{}, c.Args...)
-	if len(entrypoint) == 0 && len(args) == 0 {
-		// Backward compatibility for containers created before Entrypoint/Args
-		// fields existed. Prefer preserving image ENTRYPOINT semantics by
-		// treating legacy Cmd as args.
-		args = append([]string{}, c.Cmd...)
-	}
-	env := make([]map[string]string, 0, len(c.Env))
-	for _, item := range c.Env {
-		key, val, ok := strings.Cut(item, "=")
-		if !ok || strings.TrimSpace(key) == "" {
-			continue
-		}
-		env = append(env, map[string]string{
-			"name":  key,
-			"value": val,
-		})
-	}
+	entrypoint, args := containerEntrypointAndArgs(c)
+	env := k8sEnvFromContainerEnv(c.Env)
 	containerSpec := map[string]interface{}{
 		"name":            k8sRuntimeContainerName,
 		"image":           image,
@@ -191,7 +170,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	if wd := strings.TrimSpace(c.WorkingDir); wd != "" {
 		containerSpec["workingDir"] = wd
 	}
-	
+
 	podSpec := map[string]interface{}{
 		"restartPolicy": "Never",
 		"containers":    []map[string]interface{}{containerSpec},
@@ -225,33 +204,8 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		},
 		"spec": podSpec,
 	}
-	if len(hostAliasMap) > 0 {
-		grouped := map[string][]string{}
-		for host, ip := range hostAliasMap {
-			host = strings.ToLower(normalizeContainerHostname(host))
-			ip = strings.TrimSpace(ip)
-			if host == "" || ip == "" {
-				continue
-			}
-			grouped[ip] = append(grouped[ip], host)
-		}
-		if len(grouped) > 0 {
-			ips := make([]string, 0, len(grouped))
-			for ip := range grouped {
-				ips = append(ips, ip)
-			}
-			sort.Strings(ips)
-			hostAliases := make([]map[string]interface{}, 0, len(ips))
-			for _, ip := range ips {
-				names := grouped[ip]
-				sort.Strings(names)
-				hostAliases = append(hostAliases, map[string]interface{}{
-					"ip":        ip,
-					"hostnames": names,
-				})
-			}
-			podSpec["hostAliases"] = hostAliases
-		}
+	if hostAliases := buildK8sHostAliases(hostAliasMap); len(hostAliases) > 0 {
+		podSpec["hostAliases"] = hostAliases
 	}
 	if len(k.imagePullSecrets) > 0 {
 		items := make([]map[string]string, 0, len(k.imagePullSecrets))

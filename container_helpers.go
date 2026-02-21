@@ -219,6 +219,137 @@ func parseExtraHost(raw string) (host, ip string, ok bool) {
 	return host, ip, true
 }
 
+func normalizeExtraHosts(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		host, ip, ok := parseExtraHost(raw)
+		if !ok {
+			continue
+		}
+		key := host + "=" + ip
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, host+":"+ip)
+	}
+	return out
+}
+
+func containerRuntimeImage(c *Container) string {
+	if c == nil {
+		return ""
+	}
+	image := strings.TrimSpace(c.ResolvedImage)
+	if image == "" {
+		image = strings.TrimSpace(c.Image)
+	}
+	return image
+}
+
+func containerEntrypointAndArgs(c *Container) ([]string, []string) {
+	if c == nil {
+		return nil, nil
+	}
+	entrypoint := append([]string{}, c.Entrypoint...)
+	args := append([]string{}, c.Args...)
+	if len(entrypoint) == 0 && len(args) == 0 {
+		// Backward compatibility for containers created before Entrypoint/Args
+		// fields existed. Prefer preserving image ENTRYPOINT semantics by
+		// treating legacy Cmd as args.
+		args = append([]string{}, c.Cmd...)
+	}
+	return entrypoint, args
+}
+
+func k8sEnvFromContainerEnv(env []string) []map[string]string {
+	out := make([]map[string]string, 0, len(env))
+	for _, item := range env {
+		key, val, ok := strings.Cut(item, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		out = append(out, map[string]string{
+			"name":  key,
+			"value": val,
+		})
+	}
+	return out
+}
+
+func buildK8sHostAliases(hostAliasMap map[string]string) []map[string]interface{} {
+	if len(hostAliasMap) == 0 {
+		return nil
+	}
+	grouped := map[string][]string{}
+	for host, ip := range hostAliasMap {
+		host = strings.ToLower(normalizeContainerHostname(host))
+		ip = strings.TrimSpace(ip)
+		if host == "" || ip == "" {
+			continue
+		}
+		grouped[ip] = append(grouped[ip], host)
+	}
+	if len(grouped) == 0 {
+		return nil
+	}
+	ips := make([]string, 0, len(grouped))
+	for ip := range grouped {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	hostAliases := make([]map[string]interface{}, 0, len(ips))
+	for _, ip := range ips {
+		names := grouped[ip]
+		sort.Strings(names)
+		hostAliases = append(hostAliases, map[string]interface{}{
+			"ip":        ip,
+			"hostnames": names,
+		})
+	}
+	return hostAliases
+}
+
+func mergeContainerHostAliases(base map[string]string, extraHosts []string) map[string]string {
+	if len(base) == 0 && len(extraHosts) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(extraHosts))
+	for host, ip := range base {
+		out[host] = ip
+	}
+	for _, raw := range extraHosts {
+		host, ip, ok := parseExtraHost(raw)
+		if !ok {
+			continue
+		}
+		out[host] = ip
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func ensureContainerLoopbackIP(store *containerStore, c *Container) (string, error) {
+	if store == nil || c == nil {
+		return "", nil
+	}
+	if strings.TrimSpace(c.LoopbackIP) != "" {
+		return c.LoopbackIP, nil
+	}
+	ip, err := store.allocateLoopbackIP()
+	if err != nil {
+		return "", err
+	}
+	c.LoopbackIP = ip
+	return ip, nil
+}
+
 func hostsFileHasHostname(data []byte, hostname string) bool {
 	target := strings.TrimSpace(hostname)
 	if target == "" {

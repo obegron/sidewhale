@@ -204,3 +204,64 @@ func TestHandleJSONKeepsAllExposedPortsWhenOnlySubsetPublished(t *testing.T) {
 		t.Fatalf("unexpected published 8081/tcp binding: %s", rr.Body.String())
 	}
 }
+
+func TestContainerRuntimeImage(t *testing.T) {
+	c := &Container{Image: "img:1", ResolvedImage: "mirror/img:1"}
+	if got := containerRuntimeImage(c); got != "mirror/img:1" {
+		t.Fatalf("containerRuntimeImage resolved = %q, want %q", got, "mirror/img:1")
+	}
+	c.ResolvedImage = ""
+	if got := containerRuntimeImage(c); got != "img:1" {
+		t.Fatalf("containerRuntimeImage fallback = %q, want %q", got, "img:1")
+	}
+}
+
+func TestContainerEntrypointAndArgsLegacyFallback(t *testing.T) {
+	c := &Container{
+		Cmd: []string{"postgres", "-c", "fsync=off"},
+	}
+	entrypoint, args := containerEntrypointAndArgs(c)
+	if len(entrypoint) != 0 {
+		t.Fatalf("entrypoint = %v, want empty", entrypoint)
+	}
+	if len(args) != 3 || args[0] != "postgres" || args[1] != "-c" || args[2] != "fsync=off" {
+		t.Fatalf("args = %v, want [postgres -c fsync=off]", args)
+	}
+}
+
+func TestMergeContainerHostAliases(t *testing.T) {
+	base := map[string]string{"db": "127.0.0.2"}
+	got := mergeContainerHostAliases(base, []string{"db:127.0.0.9", "cache=127.0.0.3", "bad"})
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2 (%v)", len(got), got)
+	}
+	if got["db"] != "127.0.0.9" {
+		t.Fatalf("db ip = %q, want %q", got["db"], "127.0.0.9")
+	}
+	if got["cache"] != "127.0.0.3" {
+		t.Fatalf("cache ip = %q, want %q", got["cache"], "127.0.0.3")
+	}
+}
+
+func TestBuildK8sHostAliasesSorted(t *testing.T) {
+	in := map[string]string{
+		"B_db":    "10.0.0.2",
+		"cache_1": "10.0.0.3",
+		"a-db":    "10.0.0.2",
+	}
+	aliases := buildK8sHostAliases(in)
+	if len(aliases) != 2 {
+		t.Fatalf("len(aliases) = %d, want 2 (%v)", len(aliases), aliases)
+	}
+	first := aliases[0]
+	if first["ip"] != "10.0.0.2" {
+		t.Fatalf("first ip = %#v, want 10.0.0.2", first["ip"])
+	}
+	firstHosts, ok := first["hostnames"].([]string)
+	if !ok || len(firstHosts) != 2 {
+		t.Fatalf("first hostnames = %#v, want two names", first["hostnames"])
+	}
+	if firstHosts[0] != "a-db" || firstHosts[1] != "b-db" {
+		t.Fatalf("first hostnames = %v, want [a-db b-db]", firstHosts)
+	}
+}

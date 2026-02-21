@@ -274,14 +274,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		}
 		client.imagePullSecrets = append([]string{}, k8sImagePullSecrets...)
 		if c.K8sPodName == "" {
-			hostAliasMap := store.peerHostAliasesForContainer(c.ID)
-			for _, raw := range c.ExtraHosts {
-				host, ip, ok := parseExtraHost(raw)
-				if !ok {
-					continue
-				}
-				hostAliasMap[host] = ip
-			}
+			hostAliasMap := mergeContainerHostAliases(store.peerHostAliasesForContainer(c.ID), c.ExtraHosts)
 			podName, err := client.createPod(r.Context(), c, hostAliasMap)
 			if err != nil {
 				if reserved {
@@ -388,60 +381,52 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	cmdArgs = resolveCommandInRootfs(c.Rootfs, c.Env, cmdArgs)
 	runtimeEnv := append([]string{}, c.Env...)
 	runtimeTargets := clonePortTargets(c.PortTargets)
+	ensureLoopbackIP := func() error {
+		_, err := ensureContainerLoopbackIP(store, c)
+		return err
+	}
 	if isRedisImage(c.Image) {
-		if strings.TrimSpace(c.LoopbackIP) == "" {
-			ip, allocErr := store.allocateLoopbackIP()
-			if allocErr != nil {
-				if reserved {
-					m.mu.Lock()
-					if m.running > 0 {
-						m.running--
-					}
-					m.mu.Unlock()
+		if err := ensureLoopbackIP(); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
 				}
-				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
-				return
+				m.mu.Unlock()
 			}
-			c.LoopbackIP = ip
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
 		}
 		cmdArgs = applyRedisRuntimeCompat(cmdArgs, c.LoopbackIP)
 		runtimeTargets[6379] = c.LoopbackIP + ":6379"
 	}
 	if isLLdapImage(c.Image) {
-		if strings.TrimSpace(c.LoopbackIP) == "" {
-			ip, allocErr := store.allocateLoopbackIP()
-			if allocErr != nil {
-				if reserved {
-					m.mu.Lock()
-					if m.running > 0 {
-						m.running--
-					}
-					m.mu.Unlock()
+		if err := ensureLoopbackIP(); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
 				}
-				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
-				return
+				m.mu.Unlock()
 			}
-			c.LoopbackIP = ip
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
 		}
 		runtimeEnv = applyLLdapRuntimeCompatEnv(runtimeEnv, c.LoopbackIP)
 		runtimeTargets[3890] = c.LoopbackIP + ":3890"
 		runtimeTargets[17170] = c.LoopbackIP + ":17170"
 	}
 	if isNginxImage(c.Image) {
-		if strings.TrimSpace(c.LoopbackIP) == "" {
-			ip, allocErr := store.allocateLoopbackIP()
-			if allocErr != nil {
-				if reserved {
-					m.mu.Lock()
-					if m.running > 0 {
-						m.running--
-					}
-					m.mu.Unlock()
+		if err := ensureLoopbackIP(); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
 				}
-				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
-				return
+				m.mu.Unlock()
 			}
-			c.LoopbackIP = ip
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
 		}
 		if err := writeNginxCompatConfig(c.Rootfs, 8080); err != nil {
 			if reserved {
@@ -458,20 +443,16 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		runtimeTargets[80] = c.LoopbackIP + ":8080"
 	}
 	if isSSHDImage(c.Image) {
-		if strings.TrimSpace(c.LoopbackIP) == "" {
-			ip, allocErr := store.allocateLoopbackIP()
-			if allocErr != nil {
-				if reserved {
-					m.mu.Lock()
-					if m.running > 0 {
-						m.running--
-					}
-					m.mu.Unlock()
+		if err := ensureLoopbackIP(); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
 				}
-				writeError(w, http.StatusInternalServerError, "start failed: "+allocErr.Error())
-				return
+				m.mu.Unlock()
 			}
-			c.LoopbackIP = ip
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
 		}
 		const sshdCompatPort = 2222
 		cmdArgs = applySSHDRuntimeCompat(cmdArgs, c.LoopbackIP, sshdCompatPort)
@@ -1198,27 +1179,6 @@ func clonePortTargets(in map[int]string) map[int]string {
 	out := make(map[int]string, len(in))
 	for k, v := range in {
 		out[k] = v
-	}
-	return out
-}
-
-func normalizeExtraHosts(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(in))
-	for _, raw := range in {
-		host, ip, ok := parseExtraHost(raw)
-		if !ok {
-			continue
-		}
-		key := host + "=" + ip
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, host+":"+ip)
 	}
 	return out
 }
