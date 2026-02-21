@@ -179,6 +179,7 @@ make integration-test-upstream-k8s-clean
 For current host-backend compatibility status across Testcontainers modules, see:
 
 - `docs/compatibility-matrix.md`
+- `docs/codebase-layout.md` (source map for where new code should go)
 
 ## Deployment Profiles
 

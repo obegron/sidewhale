@@ -46,7 +46,7 @@ func TestHandleCreateK8sKeepsOriginalImageReference(t *testing.T) {
 	if id == "" {
 		t.Fatalf("missing container id in response: %s", rec.Body.String())
 	}
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	if !ok {
 		t.Fatalf("container %q not found in store", id)
 	}
@@ -96,7 +96,7 @@ func TestHandleCreateRyukForcedHostBackend(t *testing.T) {
 	if id == "" {
 		t.Fatalf("missing container id in response: %s", rec.Body.String())
 	}
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	if !ok {
 		t.Fatalf("container %q not found in store", id)
 	}

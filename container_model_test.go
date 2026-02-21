@@ -22,13 +22,13 @@ func TestContainerLookupByNameAndShortID(t *testing.T) {
 		},
 	}
 
-	if c, ok := store.get("t1"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
+	if c, ok := store.findContainer("t1"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
 		t.Fatalf("lookup by name failed: ok=%v c=%+v", ok, c)
 	}
-	if c, ok := store.get("/t1"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
+	if c, ok := store.findContainer("/t1"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
 		t.Fatalf("lookup by slash-name failed: ok=%v c=%+v", ok, c)
 	}
-	if c, ok := store.get("f1513654"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
+	if c, ok := store.findContainer("f1513654"); !ok || c.ID != "f1513654ce811a41bfe0292e" {
 		t.Fatalf("lookup by short id failed: ok=%v c=%+v", ok, c)
 	}
 }

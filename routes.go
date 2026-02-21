@@ -85,7 +85,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		handleEvents(w, r)
+		handleContainerEvents(w, r)
 	})
 	mux.HandleFunc("/networks/prune", func(w http.ResponseWriter, r *http.Request) {
 		handleNetworksPrune(w, r, store)
@@ -136,7 +136,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			return
 		}
 		if path == "create" && r.Method == http.MethodPost {
-			handleCreate(w, r, store, cfg.runtimeBackend, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure, ensureImage)
+			handleContainerCreate(w, r, store, cfg.runtimeBackend, cfg.allowedPrefixes, cfg.mirrorRules, cfg.unixSocketPath, cfg.trustInsecure, ensureImage)
 			return
 		}
 		parts := strings.Split(path, "/")
@@ -155,13 +155,13 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleStart(w, r, store, m, cfg.limits, cfg.runtimeBackend, cfg.k8sRuntimeNamespace, cfg.k8sImagePullSecrets, id)
+			handleContainerStart(w, r, store, m, cfg.limits, cfg.runtimeBackend, cfg.k8sRuntimeNamespace, cfg.k8sImagePullSecrets, id)
 		case "kill":
 			if r.Method != http.MethodPost {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleKill(w, r, store, id)
+			handleContainerKill(w, r, store, id)
 		case "exec":
 			if r.Method != http.MethodPost {
 				writeError(w, http.StatusNotFound, "not found")
@@ -173,31 +173,31 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleStop(w, r, store, id)
+			handleContainerStop(w, r, store, id)
 		case "json":
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleJSON(w, r, store, id)
+			handleContainerInspect(w, r, store, id)
 		case "logs":
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleLogs(w, r, store, id)
+			handleContainerLogs(w, r, store, id)
 		case "stats":
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleStats(w, r, store, id)
+			handleContainerStats(w, r, store, id)
 		case "top":
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleTop(w, r, store, id)
+			handleContainerTop(w, r, store, id)
 		case "archive":
 			switch r.Method {
 			case http.MethodGet:
@@ -216,10 +216,10 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}
-			handleWait(w, r, store, id)
+			handleContainerWait(w, r, store, id)
 		default:
 			if action == "" && r.Method == http.MethodDelete {
-				handleDelete(w, r, store, id)
+				handleContainerDelete(w, r, store, id)
 				return
 			}
 			writeError(w, http.StatusNotFound, "not found")
@@ -261,7 +261,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 		}
 		if cfg.runtimeBackend == runtimeBackendK8s {
 			for _, id := range store.listContainerIDs() {
-				c, ok := store.get(id)
+				c, ok := store.findContainer(id)
 				if !ok || c == nil || strings.TrimSpace(c.K8sPodName) == "" {
 					continue
 				}

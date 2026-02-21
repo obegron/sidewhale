@@ -80,7 +80,7 @@ func (s *containerStore) saveNetworkLocked(n *Network) error {
 	return os.WriteFile(s.networkPath(n.ID), data, 0o644)
 }
 
-func (s *containerStore) saveNetwork(n *Network) error {
+func (s *containerStore) upsertNetwork(n *Network) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
@@ -88,7 +88,7 @@ func (s *containerStore) saveNetwork(n *Network) error {
 	return s.saveNetworkLocked(n)
 }
 
-func (s *containerStore) getNetwork(ref string) (*Network, bool) {
+func (s *containerStore) findNetwork(ref string) (*Network, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
@@ -139,6 +139,11 @@ func (s *containerStore) listNetworks() []map[string]interface{} {
 	}
 	return out
 }
+
+// Backward-compat wrappers during naming migration.
+func (s *containerStore) saveNetwork(n *Network) error { return s.upsertNetwork(n) }
+
+func (s *containerStore) getNetwork(ref string) (*Network, bool) { return s.findNetwork(ref) }
 
 func (s *containerStore) connectContainerToNetwork(networkID string, c *Container, aliases []string) error {
 	s.mu.Lock()

@@ -25,7 +25,7 @@ func handleNetworksCreate(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusBadRequest, "network name required")
 		return
 	}
-	if existing, ok := store.getNetwork(name); ok && req.CheckDuplicate {
+	if existing, ok := store.findNetwork(name); ok && req.CheckDuplicate {
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"Id":      existing.ID,
 			"Warning": "network already exists",
@@ -65,7 +65,7 @@ func handleNetworksCreate(w http.ResponseWriter, r *http.Request, store *contain
 	if n.Labels == nil {
 		n.Labels = map[string]string{}
 	}
-	if err := store.saveNetwork(n); err != nil {
+	if err := store.upsertNetwork(n); err != nil {
 		writeError(w, http.StatusInternalServerError, "state write failed")
 		return
 	}
@@ -88,7 +88,7 @@ func handleNetworkInspect(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.getNetwork(ref)
+	n, ok := store.findNetwork(ref)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
@@ -101,7 +101,7 @@ func handleNetworkDelete(w http.ResponseWriter, r *http.Request, store *containe
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.getNetwork(ref)
+	n, ok := store.findNetwork(ref)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
@@ -126,7 +126,7 @@ func handleNetworkConnect(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.getNetwork(ref)
+	n, ok := store.findNetwork(ref)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
@@ -136,7 +136,7 @@ func handleNetworkConnect(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	c, ok := store.get(req.Container)
+	c, ok := store.findContainer(req.Container)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
@@ -153,7 +153,7 @@ func handleNetworkDisconnect(w http.ResponseWriter, r *http.Request, store *cont
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.getNetwork(ref)
+	n, ok := store.findNetwork(ref)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
@@ -163,7 +163,7 @@ func handleNetworkDisconnect(w http.ResponseWriter, r *http.Request, store *cont
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	c, ok := store.get(req.Container)
+	c, ok := store.findContainer(req.Container)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return

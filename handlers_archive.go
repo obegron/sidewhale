@@ -42,7 +42,7 @@ func isSafeLinkTarget(linkname, symlinkTargetPath, dst string) (bool, error) {
 }
 
 func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
@@ -104,7 +104,7 @@ func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerSt
 }
 
 func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return

@@ -53,7 +53,7 @@ func (s *containerStore) containerPath(id string) string {
 	return filepath.Join(s.stateDir, "containers", id+".json")
 }
 
-func (s *containerStore) save(c *Container) error {
+func (s *containerStore) saveContainer(c *Container) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.containers[c.ID] = c
@@ -64,7 +64,7 @@ func (s *containerStore) save(c *Container) error {
 	return os.WriteFile(s.containerPath(c.ID), data, 0o644)
 }
 
-func (s *containerStore) get(id string) (*Container, bool) {
+func (s *containerStore) findContainer(id string) (*Container, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id = normalizeContainerName(id)
@@ -205,18 +205,27 @@ func (s *containerStore) stopProxies(id string) {
 	}
 }
 
-func (s *containerStore) saveExec(inst *ExecInstance) {
+func (s *containerStore) putExec(inst *ExecInstance) {
 	s.mu.Lock()
 	s.execs[inst.ID] = inst
 	s.mu.Unlock()
 }
 
-func (s *containerStore) getExec(id string) (*ExecInstance, bool) {
+func (s *containerStore) findExec(id string) (*ExecInstance, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	inst, ok := s.execs[id]
 	return inst, ok
 }
+
+// Backward-compat wrappers during naming migration.
+func (s *containerStore) save(c *Container) error { return s.saveContainer(c) }
+
+func (s *containerStore) get(id string) (*Container, bool) { return s.findContainer(id) }
+
+func (s *containerStore) saveExec(inst *ExecInstance) { s.putExec(inst) }
+
+func (s *containerStore) getExec(id string) (*ExecInstance, bool) { return s.findExec(id) }
 
 func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	type stopTarget struct {

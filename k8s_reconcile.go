@@ -45,7 +45,7 @@ func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride st
 	}
 	running := 0
 	for _, id := range store.listContainerIDs() {
-		c, ok := store.get(id)
+		c, ok := store.findContainer(id)
 		if !ok || c == nil || strings.TrimSpace(c.K8sPodName) == "" {
 			continue
 		}
@@ -63,7 +63,7 @@ func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride st
 				}
 				c.K8sPodIP = ""
 				c.PortTargets = nil
-				_ = store.save(c)
+				_ = store.saveContainer(c)
 				continue
 			}
 			fmt.Printf("sidewhale: k8s reconcile pod lookup failed container=%s pod=%s err=%v\n", c.ID, c.K8sPodName, err)
@@ -106,7 +106,7 @@ func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride st
 				c.FinishedAt = time.Now().UTC()
 			}
 		}
-		_ = store.save(c)
+		_ = store.saveContainer(c)
 	}
 	m.mu.Lock()
 	m.running = running

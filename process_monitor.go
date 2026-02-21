@@ -15,7 +15,7 @@ func monitorContainer(id string, pid int, logPath string, store *containerStore,
 	if pid <= 0 {
 		return
 	}
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	checkOracleFatal := ok && isOracleImage(c.Image)
 	containerDir := ""
 	if ok {

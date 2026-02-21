@@ -20,7 +20,7 @@ import (
 var shellNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func handleExecCreate(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
-	c, ok := store.get(id)
+	c, ok := store.findContainer(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
@@ -48,17 +48,17 @@ func handleExecCreate(w http.ResponseWriter, r *http.Request, store *containerSt
 		Env:         append([]string{}, req.Env...),
 		ExitCode:    -1,
 	}
-	store.saveExec(inst)
+	store.putExec(inst)
 	writeJSON(w, http.StatusCreated, execCreateResponse{ID: execID})
 }
 
 func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerStore, execID string) {
-	inst, ok := store.getExec(execID)
+	inst, ok := store.findExec(execID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "exec instance not found")
 		return
 	}
-	c, ok := store.get(inst.ContainerID)
+	c, ok := store.findContainer(inst.ContainerID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
@@ -66,7 +66,7 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
 	inst.Running = true
-	store.saveExec(inst)
+	store.putExec(inst)
 	runErr := error(nil)
 	if strings.TrimSpace(c.K8sPodName) != "" {
 		client, err := newInClusterK8sClient()
@@ -121,7 +121,7 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 	inst.Stdout = append([]byte(nil), stdoutBuf.Bytes()...)
 	inst.Stderr = append([]byte(nil), stderrBuf.Bytes()...)
 	inst.Output = append(append([]byte(nil), inst.Stdout...), inst.Stderr...)
-	store.saveExec(inst)
+	store.putExec(inst)
 
 	connHdr := strings.ToLower(r.Header.Get("Connection"))
 	if strings.Contains(connHdr, "upgrade") {
@@ -215,7 +215,7 @@ func shellQuote(s string) string {
 }
 
 func handleExecJSON(w http.ResponseWriter, r *http.Request, store *containerStore, execID string) {
-	inst, ok := store.getExec(execID)
+	inst, ok := store.findExec(execID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "exec instance not found")
 		return
