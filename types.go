@@ -108,6 +108,7 @@ type hostConfig struct {
 	NetworkMode  string                   `json:"NetworkMode"`
 	PortBindings map[string][]portBinding `json:"PortBindings"`
 	ExtraHosts   []string                 `json:"ExtraHosts"`
+	Binds        []string                 `json:"Binds"`
 }
 
 type portBinding struct {

@@ -122,6 +122,17 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
 		return
 	}
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
+			return
+		}
+		if err := syncContainerTmpToK8sPod(r.Context(), client, c); err != nil {
+			writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

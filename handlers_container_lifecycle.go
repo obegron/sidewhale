@@ -289,9 +289,34 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 			}
 			c.K8sPodName = podName
 			c.K8sNamespace = client.namespace
+			if err := store.saveContainer(c); err != nil {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				writeError(w, http.StatusInternalServerError, "state write failed")
+				return
+			}
 		}
 		podIP, podState, err := client.waitForPodStarted(r.Context(), c.K8sNamespace, c.K8sPodName, 2*time.Minute)
 		if err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			m.mu.Lock()
+			m.startFailures++
+			m.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
+		}
+		if err := syncContainerTmpToK8sPod(r.Context(), client, c); err != nil {
 			if reserved {
 				m.mu.Lock()
 				if m.running > 0 {
@@ -309,20 +334,6 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		if podState.Running {
 			for cp := range c.Ports {
 				targets[cp] = fmt.Sprintf("%s:%d", podIP, cp)
-			}
-			if err := waitForPortTargets(r.Context(), targets, 90*time.Second); err != nil {
-				if reserved {
-					m.mu.Lock()
-					if m.running > 0 {
-						m.running--
-					}
-					m.mu.Unlock()
-				}
-				m.mu.Lock()
-				m.startFailures++
-				m.mu.Unlock()
-				writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
-				return
 			}
 			store.stopProxies(c.ID)
 			proxies, err := startPortProxies(c.Ports, targets)

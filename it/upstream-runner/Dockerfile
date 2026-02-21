@@ -29,12 +29,13 @@ RUN mkdir -p "$GRADLE_USER_HOME" \
        && ./gradlew $PRECOMPILE_TASKS --no-daemon; \
      fi
 
-# Resolve runtime dependencies needed by upstream postgres tests so the
+# Resolve runtime dependencies needed by selected upstream tests so the
 # in-cluster runner can execute in --offline mode without external DNS/egress.
 RUN if [ "$PREWARM_DEPS" = "true" ]; then \
       cd /opt/testcontainers-java \
-      && ./gradlew :testcontainers:shadowJar :testcontainers-postgresql:testClasses --no-daemon \
-      && (./gradlew :testcontainers-postgresql:test --tests org.testcontainers.__none__ --no-daemon || true); \
+      && ./gradlew :testcontainers:shadowJar :testcontainers-postgresql:testClasses :testcontainers-kafka:testClasses --no-daemon \
+      && (./gradlew :testcontainers-postgresql:test --tests org.testcontainers.__none__ --no-daemon || true) \
+      && (./gradlew :testcontainers-kafka:test --tests org.testcontainers.__none__ --no-daemon || true); \
     fi
 
 WORKDIR /workspace
