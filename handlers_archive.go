@@ -538,7 +538,8 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(localPath); err != nil {
+	info, err := os.Lstat(localPath)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
@@ -554,6 +555,9 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	dstParent := path.Dir(containerPath)
 	if dstParent == "." || dstParent == "" {
 		dstParent = "/"
+	}
+	if info.Mode().IsRegular() {
+		return syncFileToK8sPod(ctx, client, c, localPath, containerPath, dstParent, info.Mode().Perm())
 	}
 
 	pr, pw := io.Pipe()
@@ -582,9 +586,98 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	}
 	fmt.Printf("sidewhale: archive k8s sync container=%s path=%s exit=%d stderr=%q\n", c.ID, containerPath, code, strings.TrimSpace(string(errOut)))
 	if code != 0 {
+		trimErr := strings.TrimSpace(string(errOut))
+		if code == 127 && strings.Contains(trimErr, "tar: command not found") {
+			fmt.Printf("sidewhale: archive k8s sync fallback=notar container=%s path=%s\n", c.ID, containerPath)
+			return syncPathToK8sPodNoTar(ctx, client, c, localPath, containerPath)
+		}
 		return fmt.Errorf("k8s archive sync failed path=%s exit=%d stderr=%s stdout=%s", containerPath, code, strings.TrimSpace(string(errOut)), strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func syncFileToK8sPod(ctx context.Context, client *k8sClient, c *Container, localPath, containerPath, dstParent string, perm fs.FileMode) error {
+	fh, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+
+	cmd := []string{"sh", "-lc", "mkdir -p " + shellQuote(dstParent) + " && cat > " + shellQuote(containerPath) + " && chmod " + fmt.Sprintf("%o", perm) + " " + shellQuote(containerPath)}
+	out, errOut, code, err := client.execPodWithInput(ctx, c.K8sNamespace, c.K8sPodName, cmd, fh)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sidewhale: archive k8s sync-file container=%s path=%s exit=%d stderr=%q\n", c.ID, containerPath, code, strings.TrimSpace(string(errOut)))
+	if code != 0 {
+		return fmt.Errorf("k8s archive sync failed path=%s exit=%d stderr=%s stdout=%s", containerPath, code, strings.TrimSpace(string(errOut)), strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func syncPathToK8sPodNoTar(ctx context.Context, client *k8sClient, c *Container, localPath, containerPath string) error {
+	info, err := os.Lstat(localPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		dstParent := path.Dir(containerPath)
+		if dstParent == "." || dstParent == "" {
+			dstParent = "/"
+		}
+		return syncFileToK8sPod(ctx, client, c, localPath, containerPath, dstParent, info.Mode().Perm())
+	}
+	if !info.IsDir() {
+		return nil
+	}
+
+	mkRoot := []string{"sh", "-lc", "mkdir -p " + shellQuote(containerPath)}
+	_, errOut, code, err := client.execPod(ctx, c.K8sNamespace, c.K8sPodName, mkRoot)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("k8s archive sync fallback mkdir failed path=%s exit=%d stderr=%s", containerPath, code, strings.TrimSpace(string(errOut)))
+	}
+
+	return filepath.WalkDir(localPath, func(srcPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if srcPath == localPath {
+			return nil
+		}
+		rel, err := filepath.Rel(localPath, srcPath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		dstPath := path.Clean(path.Join(containerPath, rel))
+
+		if d.IsDir() {
+			cmd := []string{"sh", "-lc", "mkdir -p " + shellQuote(dstPath)}
+			_, stderr, exitCode, err := client.execPod(ctx, c.K8sNamespace, c.K8sPodName, cmd)
+			if err != nil {
+				return err
+			}
+			if exitCode != 0 {
+				return fmt.Errorf("k8s archive sync fallback mkdir failed path=%s exit=%d stderr=%s", dstPath, exitCode, strings.TrimSpace(string(stderr)))
+			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		st, err := d.Info()
+		if err != nil {
+			return err
+		}
+		dstParent := path.Dir(dstPath)
+		if dstParent == "." || dstParent == "" {
+			dstParent = "/"
+		}
+		return syncFileToK8sPod(ctx, client, c, srcPath, dstPath, dstParent, st.Mode().Perm())
+	})
 }
 
 func patchCassandraConfigForK8s(c *Container, containerPath, localPath string) error {
