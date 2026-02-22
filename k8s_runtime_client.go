@@ -134,6 +134,9 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		"image":           image,
 		"imagePullPolicy": "IfNotPresent",
 		"env":             env,
+		"securityContext": map[string]interface{}{
+			"runAsUser": 0,
+		},
 		"volumeMounts": []map[string]interface{}{
 			{
 				"name":      "dshm",
