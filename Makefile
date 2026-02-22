@@ -95,7 +95,7 @@ K8S_UPSTREAM_TASK ?= :testcontainers:test
 K8S_UPSTREAM_TEST_ARGS ?= --tests org.testcontainers.containers.ContainerStateTest
 K8S_UPSTREAM_EXTRA_GRADLE_ARGS ?= --rerun-tasks --max-workers=1 --no-daemon
 K8S_SIDEWHALE_DOCKER_HOST ?=
-K8S_UPSTREAM_PRECOMPILE_TASKS ?= :testcontainers:testClasses :testcontainers-postgresql:testClasses
+K8S_UPSTREAM_PRECOMPILE_TASKS ?= :testcontainers:testClasses :testcontainers-postgresql:testClasses :testcontainers-ldap:testClasses :testcontainers-mockserver:testClasses
 K8S_UPSTREAM_PREWARM_DEPS ?= true
 K8S_KAFKA_IT_JOB_NAME ?= sidewhale-kafka-listener-it
 K8S_KAFKA_IT_TIMEOUT ?= 600s

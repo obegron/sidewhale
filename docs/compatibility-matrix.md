@@ -18,7 +18,9 @@ Status legend:
 | Image pull (`/images/create`) | Confirmed | Streaming progress implemented; digest/local mirror flows exercised. |
 | Logs (`/containers/{id}/logs`) | Confirmed | Non-stream and follow flows used in upstream tests. |
 | Wait/state (`/containers/{id}/wait`, running status) | Confirmed | Wait/error-state behavior exercised in core tests. |
+| File/archive copy (`/containers/{id}/archive` HEAD/GET/PUT) | Confirmed | Core file-operation coverage now stable, including copy-back from stopped containers and large-file copy paths in upstream tests. |
 | Port publishing | Confirmed | Host TCP proxy mapping used broadly across modules. |
+| Listener/bind address compatibility | Partial | Strongly improved for single-container services (Kafka listener flow now passing), but image-specific bind assumptions can still require compatibility handling. |
 | Networks API surface | Partial | Basic endpoints exist, but no real Docker network namespace semantics. |
 | Cross-container DNS/service discovery | Unsupported | No embedded DNS; name-based cluster discovery is a known gap. |
 
@@ -35,10 +37,10 @@ Status legend:
 | Vault | Confirmed | Passed after mirroring required images. |
 | Solr | Confirmed | Module tests executed successfully in recent loop. |
 | JUnit Jupiter integration tests (selected) | Confirmed | Selected inheritance/restart tests validated. |
-| MockServer | Partial | Image/runtime path tested; not yet fully closed as stable baseline. |
+| MockServer | Confirmed | `:testcontainers-mockserver:test` passed in k8s upstream loop (`MockServerContainerTest`: standard, TLS, mTLS, and wait-strategy paths). |
 | Nginx module | Partial | Works only with Sidewhale nginx compat handling; privileged-port behavior is image-sensitive. |
-| LDAP (LLDAP) | Partial | Startup behavior improved, but reliability issues remain (bind/process cleanup edge cases). |
-| Kafka (single container) | Partial | Some single-node flows can run; cluster scenarios are limited by DNS/network semantics. |
+| LDAP (LLDAP) | Confirmed | `:testcontainers-ldap:test` passed in k8s upstream loop (`LLdapContainerTest`: default bind, URL-based bind, custom base DN, custom password). |
+| Kafka (single container) | Partial | Listener-based single-node flow (`KafkaContainerTest.testUsageWithListener`) now passes in k8s backend. Broader Kafka matrix still in progress. |
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
 | Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
 | Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
