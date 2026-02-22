@@ -75,6 +75,14 @@ func isPostgresFamilyImage(image string) bool {
 		strings.Contains(image, "pgvector")
 }
 
+func isMySQLImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "/mysql:") ||
+		strings.HasPrefix(image, "mysql:") ||
+		strings.HasSuffix(image, "/mysql") ||
+		image == "mysql"
+}
+
 func dockerHostForInnerClients(unixSocketPath, requestHost string) string {
 	if strings.TrimSpace(unixSocketPath) != "" {
 		return "unix://" + unixSocketPath

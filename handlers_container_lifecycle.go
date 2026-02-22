@@ -64,19 +64,17 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 			return
 		}
 	} else {
-		// Best effort for k8s mode: keep a local shadow rootfs so archive/read
-		// fallbacks on stopped containers can still work.
-		imageRootfs, meta, _, err = ensureImageWithFallback(
-			r.Context(),
-			resolvedRef,
-			req.Image,
-			store.stateDir,
-			nil,
-			trustInsecure,
-			ensureImage,
-		)
-		if err != nil {
-			fmt.Printf("sidewhale: k8s shadow rootfs not available image=%s err=%v\n", req.Image, err)
+		// In k8s mode, avoid blocking container create on a local image pull.
+		// Only use already-cached local images as optional shadow rootfs.
+		candidates := uniqueImageRefs(resolvedRef, req.Image)
+		rec, ok, lookupErr := findImageRecordByReferenceOrDigest(store.stateDir, candidates, candidates)
+		if lookupErr == nil && ok {
+			imageRootfs = rec.rootfsDir
+			meta = rec.meta
+		} else if lookupErr != nil {
+			fmt.Printf("sidewhale: k8s shadow rootfs lookup failed image=%s err=%v\n", req.Image, lookupErr)
+		} else {
+			fmt.Printf("sidewhale: k8s shadow rootfs cache miss image=%s\n", req.Image)
 		}
 	}
 	id, err := randomID(12)
@@ -447,6 +445,28 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		if podState.Running {
 			for cp := range c.Ports {
 				targets[cp] = fmt.Sprintf("%s:%d", podIP, cp)
+			}
+			if isMySQLImage(c.ResolvedImage) || isMySQLImage(c.Image) {
+				mysqlTargets := map[int]string{}
+				if target, ok := targets[3306]; ok {
+					mysqlTargets[3306] = target
+				}
+				if len(mysqlTargets) > 0 {
+					if err := waitForStablePortTargets(r.Context(), mysqlTargets, 2*time.Minute, 3); err != nil {
+						if reserved {
+							m.mu.Lock()
+							if m.running > 0 {
+								m.running--
+							}
+							m.mu.Unlock()
+						}
+						m.mu.Lock()
+						m.startFailures++
+						m.mu.Unlock()
+						writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+						return
+					}
+				}
 			}
 			if isCassandraImage(c.ResolvedImage) || isCassandraImage(c.Image) {
 				cassandraTargets := map[int]string{}
