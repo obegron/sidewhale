@@ -20,7 +20,7 @@ Status legend:
 | Wait/state (`/containers/{id}/wait`, running status) | Confirmed | Wait/error-state behavior exercised in core tests. |
 | File/archive copy (`/containers/{id}/archive` HEAD/GET/PUT) | Confirmed | Core file-operation coverage now stable, including copy-back from stopped containers and large-file copy paths in upstream tests. |
 | Port publishing | Confirmed | Host TCP proxy mapping used broadly across modules. |
-| Listener/bind address compatibility | Partial | Strongly improved for single-container services (Kafka listener flow now passing), but image-specific bind assumptions can still require compatibility handling. |
+| Listener/bind address compatibility | Partial | Strongly improved for single-container services (Kafka listener flow and host-exposed-port forwarding now passing in proot and k8s), but image-specific bind assumptions can still require compatibility handling. |
 | Networks API surface | Partial | Basic endpoints exist, but no real Docker network namespace semantics. |
 | Cross-container DNS/service discovery | Unsupported | No embedded DNS; name-based cluster discovery is a known gap. |
 
@@ -40,7 +40,7 @@ Status legend:
 | MockServer | Confirmed | `:testcontainers-mockserver:test` passed in k8s upstream loop (`MockServerContainerTest`: standard, TLS, mTLS, and wait-strategy paths). |
 | Nginx module | Partial | Works only with Sidewhale nginx compat handling; privileged-port behavior is image-sensitive. |
 | LDAP (LLDAP) | Confirmed | `:testcontainers-ldap:test` passed in k8s upstream loop (`LLdapContainerTest`: default bind, URL-based bind, custom base DN, custom password). |
-| Kafka (single container) | Partial | Listener-based single-node flow (`KafkaContainerTest.testUsageWithListener`) now passes on both k8s and proot backends (verified with `--rerun-tasks`). Broader Kafka matrix remains in progress. |
+| Kafka (single container) | Confirmed | Full `:testcontainers-kafka:test` passed on proot with `--rerun-tasks` (including `testWithHostExposedPort` and `testWithHostExposedPortAndExternalNetwork`) after proot-specific SSH helper compatibility handling. |
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
 | Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
 | Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
