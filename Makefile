@@ -8,7 +8,7 @@ GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X 'main.version=$(VERSION)' -X 'main.gitCommit=$(GIT_COMMIT)' -X 'main.buildTime=$(BUILD_TIME)'
 
-.PHONY: help build image docker-build docker-push image-run smoke-pull integration-test integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean clean
+.PHONY: help build image docker-build docker-push image-run smoke-pull integration-test integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean integration-test-kafka-log-stream-k8s integration-test-kafka-log-stream-k8s-clean integration-test-kafka-upstream-shape-k8s integration-test-kafka-upstream-shape-k8s-clean clean
 
 help:
 	@echo "Targets:"
@@ -27,6 +27,10 @@ help:
 	@echo "  integration-test-upstream-k8s-clean Delete the Kubernetes Job"
 	@echo "  integration-test-kafka-listener-k8s Run Kafka listener smoke test in-cluster against Sidewhale"
 	@echo "  integration-test-kafka-listener-k8s-clean Delete Kafka listener smoke test Job"
+	@echo "  integration-test-kafka-log-stream-k8s Run Kafka log-stream smoke test in-cluster against Sidewhale"
+	@echo "  integration-test-kafka-log-stream-k8s-clean Delete Kafka log-stream smoke test Job"
+	@echo "  integration-test-kafka-upstream-shape-k8s Run Kafka smoke test with Testcontainers upstream startup shape"
+	@echo "  integration-test-kafka-upstream-shape-k8s-clean Delete Kafka upstream-shape smoke test Job"
 	@echo "  clean   Remove build artifacts"
 	@echo "Variables:"
 	@echo "  VERSION    Override version tag (default: git describe or dev)"
@@ -95,6 +99,10 @@ K8S_UPSTREAM_PRECOMPILE_TASKS ?= :testcontainers:testClasses :testcontainers-pos
 K8S_UPSTREAM_PREWARM_DEPS ?= true
 K8S_KAFKA_IT_JOB_NAME ?= sidewhale-kafka-listener-it
 K8S_KAFKA_IT_TIMEOUT ?= 600s
+K8S_KAFKA_LOG_IT_JOB_NAME ?= sidewhale-kafka-log-it
+K8S_KAFKA_LOG_IT_TIMEOUT ?= 600s
+K8S_KAFKA_UPSTREAM_IT_JOB_NAME ?= sidewhale-kafka-upstream-shape-it
+K8S_KAFKA_UPSTREAM_IT_TIMEOUT ?= 900s
 
 smoke-pull:
 	@set -euo pipefail; \
@@ -246,6 +254,28 @@ integration-test-kafka-listener-k8s:
 
 integration-test-kafka-listener-k8s-clean:
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_KAFKA_IT_JOB_NAME) --ignore-not-found
+
+integration-test-kafka-log-stream-k8s:
+	K8S_CONTEXT="$(K8S_CONTEXT)" \
+	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
+	K8S_KAFKA_LOG_IT_JOB_NAME="$(K8S_KAFKA_LOG_IT_JOB_NAME)" \
+	K8S_KAFKA_LOG_IT_TIMEOUT="$(K8S_KAFKA_LOG_IT_TIMEOUT)" \
+	K8S_SIDEWHALE_DOCKER_HOST="$(K8S_SIDEWHALE_DOCKER_HOST)" \
+	./it/kafka-log-stream-smoke/run.sh
+
+integration-test-kafka-log-stream-k8s-clean:
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_KAFKA_LOG_IT_JOB_NAME) --ignore-not-found
+
+integration-test-kafka-upstream-shape-k8s:
+	K8S_CONTEXT="$(K8S_CONTEXT)" \
+	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
+	K8S_KAFKA_UPSTREAM_IT_JOB_NAME="$(K8S_KAFKA_UPSTREAM_IT_JOB_NAME)" \
+	K8S_KAFKA_UPSTREAM_IT_TIMEOUT="$(K8S_KAFKA_UPSTREAM_IT_TIMEOUT)" \
+	K8S_SIDEWHALE_DOCKER_HOST="$(K8S_SIDEWHALE_DOCKER_HOST)" \
+	./it/kafka-upstream-shape-smoke/run.sh
+
+integration-test-kafka-upstream-shape-k8s-clean:
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_KAFKA_UPSTREAM_IT_JOB_NAME) --ignore-not-found
 
 clean:
 	rm -f $(BINARY)

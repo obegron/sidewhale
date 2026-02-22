@@ -49,6 +49,14 @@ func isZookeeperImage(image string) bool {
 		strings.Contains(image, "cp-zookeeper")
 }
 
+func isCassandraImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "/cassandra:") ||
+		strings.HasPrefix(image, "cassandra:") ||
+		strings.HasSuffix(image, "/cassandra") ||
+		image == "cassandra"
+}
+
 func dockerHostForInnerClients(unixSocketPath, requestHost string) string {
 	if strings.TrimSpace(unixSocketPath) != "" {
 		return "unix://" + unixSocketPath

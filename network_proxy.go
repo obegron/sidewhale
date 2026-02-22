@@ -200,6 +200,52 @@ func waitForPortTargets(ctx context.Context, targets map[int]string, timeout tim
 	return nil
 }
 
+func waitForStablePortTargets(ctx context.Context, targets map[int]string, timeout time.Duration, consecutiveSuccesses int) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	if consecutiveSuccesses < 1 {
+		consecutiveSuccesses = 1
+	}
+	deadline := time.Now().Add(timeout)
+	for containerPort, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		var lastErr error
+		streak := 0
+		for {
+			dialer := net.Dialer{Timeout: 750 * time.Millisecond}
+			conn, err := dialer.DialContext(ctx, "tcp", target)
+			if err == nil {
+				_ = conn.Close()
+				streak++
+				if streak >= consecutiveSuccesses {
+					break
+				}
+			} else {
+				lastErr = err
+				streak = 0
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return fmt.Errorf("wait for stable port %d canceled: %w", containerPort, ctx.Err())
+			}
+			if time.Now().After(deadline) {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("timeout")
+				}
+				return fmt.Errorf("wait for stable port %d on %s failed: %w", containerPort, target, lastErr)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
 func startPortProxy(hostPort, containerPort int, target string) (*portProxy, error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(hostPort))
 	if err != nil {

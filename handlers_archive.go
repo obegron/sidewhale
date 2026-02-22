@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -543,6 +544,9 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 		}
 		return err
 	}
+	if err := patchCassandraConfigForK8s(c, containerPath, localPath); err != nil {
+		return err
+	}
 	nameInTar := path.Base(containerPath)
 	if nameInTar == "." || nameInTar == "/" || nameInTar == "" {
 		nameInTar = filepath.Base(localPath)
@@ -580,6 +584,46 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	if code != 0 {
 		return fmt.Errorf("k8s archive sync failed path=%s exit=%d stderr=%s stdout=%s", containerPath, code, strings.TrimSpace(string(errOut)), strings.TrimSpace(string(out)))
 	}
+	return nil
+}
+
+func patchCassandraConfigForK8s(c *Container, containerPath, localPath string) error {
+	if c == nil {
+		return nil
+	}
+	if normalizeArchiveContainerPath(containerPath) != "/etc/cassandra/cassandra.yaml" {
+		return nil
+	}
+	podIP := strings.TrimSpace(c.K8sPodIP)
+	broadcastIP := podIP
+	if broadcastIP == "" {
+		broadcastIP = "127.0.0.1"
+	}
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	orig := string(raw)
+	updated := orig
+	rewrite := func(key, value string) {
+		re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(key) + `\s*:\s*).*$`)
+		updated = re.ReplaceAllString(updated, "${1}"+value)
+	}
+	rewrite("listen_address", broadcastIP)
+	rewrite("broadcast_address", broadcastIP)
+	rewrite("rpc_address", "0.0.0.0")
+	rewrite("broadcast_rpc_address", broadcastIP)
+	seedRe := regexp.MustCompile(`(?m)^(\s*-\s*seeds\s*:\s*).*$`)
+	updated = seedRe.ReplaceAllString(updated, `${1}"`+broadcastIP+`"`)
+	updated = strings.ReplaceAll(updated, "172.17.0.2", broadcastIP)
+	if updated == orig {
+		fmt.Printf("sidewhale: cassandra compat patch nochange path=%s pod_ip=%s broadcast_ip=%s image=%q resolved=%q\n", containerPath, podIP, broadcastIP, c.Image, c.ResolvedImage)
+		return nil
+	}
+	if err := os.WriteFile(localPath, []byte(updated), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("sidewhale: cassandra compat patched config path=%s pod_ip=%s broadcast_ip=%s\n", containerPath, podIP, broadcastIP)
 	return nil
 }
 

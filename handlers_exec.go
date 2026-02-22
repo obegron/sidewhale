@@ -82,6 +82,18 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 			if err != nil {
 				log.Printf("sidewhale: k8s exec failed pod=%s/%s cmd=%q err=%v", c.K8sNamespace, c.K8sPodName, k8sCmd, err)
 			}
+			traceK8sExec := isCassandraImage(c.Image) || isCassandraImage(c.ResolvedImage) || code != 0 || strings.Contains(strings.Join(k8sCmd, " "), "cqlsh")
+			if err == nil && traceK8sExec {
+				log.Printf(
+					"sidewhale: k8s exec result pod=%s/%s cmd=%q exit=%d stdout=%q stderr=%q",
+					c.K8sNamespace,
+					c.K8sPodName,
+					k8sCmd,
+					code,
+					trimLogOutput(out, 512),
+					trimLogOutput(errOut, 512),
+				)
+			}
 			if err == nil && code == 0 {
 				runErr = nil
 			}
@@ -147,6 +159,13 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 	if len(inst.Stderr) > 0 {
 		_, _ = w.Write(frameDockerRawStream(2, inst.Stderr))
 	}
+}
+
+func trimLogOutput(b []byte, max int) string {
+	if max <= 0 || len(b) <= max {
+		return strings.TrimSpace(string(b))
+	}
+	return strings.TrimSpace(string(b[:max])) + "...(truncated)"
 }
 
 func writeExecUpgradeResponse(rw *bufio.ReadWriter, stdout, stderr []byte) {

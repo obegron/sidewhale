@@ -346,3 +346,28 @@ func (s *containerStore) peerHostAliasesForContainer(containerID string) map[str
 	}
 	return out
 }
+
+func (s *containerStore) selfHostAliasesForContainer(containerID string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureNetworksMapLocked()
+	out := map[string]string{}
+	for _, n := range s.networks {
+		ep, attached := n.Containers[containerID]
+		if !attached || ep == nil {
+			continue
+		}
+		for _, alias := range ep.Aliases {
+			alias = normalizeContainerHostname(alias)
+			if alias == "" {
+				continue
+			}
+			out[alias] = "127.0.0.1"
+		}
+		name := normalizeContainerHostname(ep.Name)
+		if name != "" {
+			out[name] = "127.0.0.1"
+		}
+	}
+	return out
+}

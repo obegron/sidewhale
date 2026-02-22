@@ -343,6 +343,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
 			return
 		}
+		c.K8sPodIP = podIP
 		if err := syncContainerTmpToK8sPod(r.Context(), client, c); err != nil {
 			if reserved {
 				m.mu.Lock()
@@ -375,6 +376,31 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		if podState.Running {
 			for cp := range c.Ports {
 				targets[cp] = fmt.Sprintf("%s:%d", podIP, cp)
+			}
+			if isCassandraImage(c.ResolvedImage) || isCassandraImage(c.Image) {
+				cassandraTargets := map[int]string{}
+				if target, ok := targets[9042]; ok {
+					cassandraTargets[9042] = target
+				}
+				if target, ok := targets[9142]; ok {
+					cassandraTargets[9142] = target
+				}
+				if len(cassandraTargets) > 0 {
+					if err := waitForStablePortTargets(r.Context(), cassandraTargets, 2*time.Minute, 3); err != nil {
+						if reserved {
+							m.mu.Lock()
+							if m.running > 0 {
+								m.running--
+							}
+							m.mu.Unlock()
+						}
+						m.mu.Lock()
+						m.startFailures++
+						m.mu.Unlock()
+						writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+						return
+					}
+				}
 			}
 			store.stopProxies(c.ID)
 			proxies, err := startPortProxies(c.Ports, targets)

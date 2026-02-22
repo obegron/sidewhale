@@ -45,6 +45,7 @@ func monitorK8sPod(containerID, namespace, podName string, store *containerStore
 			}
 			continue
 		case "succeeded", "failed":
+			tryReplayStoppedK8sContainerLocally(c)
 			exitCode := state.ExitCode
 			finishedAt := time.Now().UTC()
 			store.stopProxies(containerID)
@@ -104,6 +105,7 @@ func syncK8sContainerState(ctx context.Context, store *containerStore, c *Contai
 		c.ExitCode = 0
 		c.FinishedAt = time.Time{}
 	} else {
+		tryReplayStoppedK8sContainerLocally(c)
 		c.Pid = 0
 		c.ExitCode = state.ExitCode
 		if state.FinishedAt.IsZero() {

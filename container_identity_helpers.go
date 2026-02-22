@@ -180,6 +180,22 @@ func k8sEnvFromContainerEnv(env []string) []map[string]string {
 	return out
 }
 
+func ensureK8sEnvValue(env []map[string]string, key, value string) []map[string]string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return env
+	}
+	for _, item := range env {
+		if strings.EqualFold(strings.TrimSpace(item["name"]), key) {
+			return env
+		}
+	}
+	return append(env, map[string]string{
+		"name":  key,
+		"value": value,
+	})
+}
+
 func buildK8sHostAliases(hostAliasMap map[string]string) []map[string]interface{} {
 	if len(hostAliasMap) == 0 {
 		return nil
@@ -227,6 +243,55 @@ func mergeContainerHostAliases(base map[string]string, extraHosts []string) map[
 			continue
 		}
 		out[host] = ip
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func kafkaListenerHostAliases(c *Container) map[string]string {
+	if c == nil {
+		return nil
+	}
+	image := containerRuntimeImage(c)
+	token := strings.ToLower(normalizeImageToken(image))
+	if !strings.Contains(token, "apache/kafka") && !strings.Contains(token, "confluentinc/cp-kafka") {
+		return nil
+	}
+	listeners := ""
+	for _, raw := range c.Env {
+		key, val, ok := strings.Cut(raw, "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(key) == "KAFKA_LISTENERS" {
+			listeners = val
+			break
+		}
+	}
+	if listeners == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, item := range strings.Split(listeners, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		_, rhs, ok := strings.Cut(item, "://")
+		if !ok {
+			continue
+		}
+		host, _, ok := strings.Cut(rhs, ":")
+		if !ok {
+			continue
+		}
+		host = strings.ToLower(normalizeContainerHostname(host))
+		if host == "" || host == "localhost" || strings.HasPrefix(host, "127.") || host == "0.0.0.0" {
+			continue
+		}
+		out[host] = "127.0.0.1"
 	}
 	if len(out) == 0 {
 		return nil

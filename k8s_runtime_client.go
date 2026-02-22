@@ -143,6 +143,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	}
 
 	isOracle := isOracleImage(image)
+	isCassandra := isCassandraImage(image)
 	if isOracle {
 		containerSpec["resources"] = map[string]interface{}{
 			"requests": map[string]string{"memory": "4Gi"},
@@ -161,6 +162,29 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			"failureThreshold":    60,
 		}
 	}
+	if isCassandra {
+		// Give archive replay a deterministic window before Cassandra reads config.
+		if len(entrypoint) > 0 {
+			bootCmd := append(append([]string{}, entrypoint...), args...)
+			entrypoint = []string{"sh", "-lc", "sleep 5; exec " + shellJoin(bootCmd)}
+			args = nil
+		}
+		probePort := 9042
+		if _, ok := c.Ports[probePort]; !ok {
+			if _, ok := c.Ports[9142]; ok {
+				probePort = 9142
+			}
+		}
+		containerSpec["startupProbe"] = map[string]interface{}{
+			"tcpSocket": map[string]interface{}{
+				"port": probePort,
+			},
+			"initialDelaySeconds": 5,
+			"periodSeconds":       2,
+			"failureThreshold":    150,
+		}
+	}
+	containerSpec["env"] = env
 
 	if len(entrypoint) > 0 {
 		containerSpec["command"] = entrypoint

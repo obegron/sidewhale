@@ -265,3 +265,19 @@ func TestBuildK8sHostAliasesSorted(t *testing.T) {
 		t.Fatalf("first hostnames = %v, want [a-db b-db]", firstHosts)
 	}
 }
+
+func TestKafkaListenerHostAliases(t *testing.T) {
+	c := &Container{
+		Image: "apache/kafka-native:3.8.0",
+		Env: []string{
+			"KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,BROKER://localhost:9093,TC-0://kafka:19092",
+		},
+	}
+	got := kafkaListenerHostAliases(c)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1 (%v)", len(got), got)
+	}
+	if got["kafka"] != "127.0.0.1" {
+		t.Fatalf("kafka ip = %q, want 127.0.0.1", got["kafka"])
+	}
+}

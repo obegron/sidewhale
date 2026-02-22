@@ -159,46 +159,53 @@ func handleLogs(w http.ResponseWriter, r *http.Request, store *containerStore, i
 		}
 		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 		flusher, _ := w.(http.Flusher)
-		lastSize := 0
-		sendDelta := func(full []byte) {
-			if len(full) <= lastSize {
+		if follow {
+			rc, err := client.podLogsFollow(r.Context(), c.K8sNamespace, c.K8sPodName)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "log read failed")
 				return
 			}
-			delta := full[lastSize:]
-			lastSize = len(full)
-			if includeStdout {
-				_, _ = w.Write(frameDockerRawStream(1, delta))
-			}
-			if includeStderr {
-				_, _ = w.Write(frameDockerRawStream(2, delta))
-			}
+			defer rc.Close()
+			w.WriteHeader(http.StatusOK)
 			if flusher != nil {
 				flusher.Flush()
 			}
-		}
-		for {
-			logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
-			if err == nil {
-				sendDelta(logs)
-			}
-			if !follow {
-				return
-			}
-			current, ok := store.findContainer(id)
-			if !ok || !current.Running {
-				// One last flush attempt after exit to avoid tail truncation.
-				logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
-				if err == nil {
-					sendDelta(logs)
+			buf := make([]byte, 16*1024)
+			for {
+				n, err := rc.Read(buf)
+				if n > 0 {
+					chunk := append([]byte{}, buf[:n]...)
+					if includeStdout {
+						_, _ = w.Write(frameDockerRawStream(1, chunk))
+					}
+					if includeStderr {
+						_, _ = w.Write(frameDockerRawStream(2, chunk))
+					}
+					if flusher != nil {
+						flusher.Flush()
+					}
 				}
-				return
-			}
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(200 * time.Millisecond):
+				if err != nil {
+					return
+				}
 			}
 		}
+		logs, err := client.podLogs(r.Context(), c.K8sNamespace, c.K8sPodName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "log read failed")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if includeStdout {
+			_, _ = w.Write(frameDockerRawStream(1, logs))
+		}
+		if includeStderr {
+			_, _ = w.Write(frameDockerRawStream(2, logs))
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
 	}
 	type logStream struct {
 		stream byte

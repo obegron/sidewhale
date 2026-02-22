@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -65,14 +66,26 @@ func main() {
 	}
 	probes := &probeState{}
 	mux := newRouter(store, m, cfg, probes)
+	handler := timeoutMiddleware(apiVersionMiddleware(mux))
+	if traceHTTPEnabled() {
+		handler = traceHTTPMiddleware(handler)
+		fmt.Printf("sidewhale: http trace enabled via SIDEWHALE_TRACE_HTTP\n")
+	}
 
 	server := &http.Server{
 		Addr:              cfg.listenAddr,
-		Handler:           timeoutMiddleware(apiVersionMiddleware(mux)),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      0,
-		IdleTimeout:       5 * time.Minute,
+		// Keep request body streaming unbounded in duration so large archive uploads
+		// (PUT /containers/{id}/archive) are not reset mid-transfer.
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		IdleTimeout:  5 * time.Minute,
+	}
+	if traceHTTPEnabled() {
+		server.ConnState = func(conn net.Conn, state http.ConnState) {
+			fmt.Printf("sidewhale: trace conn event=state remote=%s state=%s\n", conn.RemoteAddr().String(), state)
+		}
 	}
 
 	errCh := make(chan error, 2)
