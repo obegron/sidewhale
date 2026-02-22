@@ -34,12 +34,15 @@ RUN mkdir -p "$GRADLE_USER_HOME" \
 RUN if [ "$PREWARM_DEPS" = "true" ]; then \
       cd /opt/testcontainers-java \
       && ./gradlew :testcontainers:shadowJar :testcontainers:testClasses :testcontainers-postgresql:testClasses :testcontainers-kafka:testClasses :testcontainers-cassandra:testClasses :testcontainers-ldap:testClasses :testcontainers-mockserver:testClasses --no-daemon \
+      && ./gradlew -p examples :hazelcast:testClasses :zookeeper:testClasses --no-daemon \
       && (./gradlew :testcontainers:test --tests org.testcontainers.__none__ --no-daemon || true) \
       && (./gradlew :testcontainers-postgresql:test --tests org.testcontainers.__none__ --no-daemon || true) \
       && (./gradlew :testcontainers-kafka:test --tests org.testcontainers.__none__ --no-daemon || true) \
       && (./gradlew :testcontainers-cassandra:test --tests org.testcontainers.__none__ --no-daemon || true) \
       && (./gradlew :testcontainers-ldap:test --tests org.testcontainers.__none__ --no-daemon || true) \
-      && (./gradlew :testcontainers-mockserver:test --tests org.testcontainers.__none__ --no-daemon || true); \
+      && (./gradlew :testcontainers-mockserver:test --tests org.testcontainers.__none__ --no-daemon || true) \
+      && (./gradlew -p examples :hazelcast:test --tests org.testcontainers.__none__ --no-daemon || true) \
+      && (./gradlew -p examples :zookeeper:test --tests org.testcontainers.__none__ --no-daemon || true); \
     fi
 
 WORKDIR /workspace
