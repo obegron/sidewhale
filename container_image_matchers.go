@@ -53,7 +53,9 @@ func isSSHDImage(image string) bool {
 func isZookeeperImage(image string) bool {
 	image = strings.ToLower(normalizeImageToken(image))
 	return strings.Contains(image, "/zookeeper:") ||
+		strings.HasPrefix(image, "zookeeper:") ||
 		strings.HasSuffix(image, "/zookeeper") ||
+		image == "zookeeper" ||
 		strings.Contains(image, "cp-zookeeper")
 }
 
