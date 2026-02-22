@@ -54,6 +54,27 @@ func TestResolveCommandInRootfsRewritesEnvShebang(t *testing.T) {
 	}
 }
 
+func TestResolveCommandInRootfsFallsBackFromBrokenAbsoluteShell(t *testing.T) {
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "usr", "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir usr/bin: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(rootfs, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.Symlink("/missing/sh", filepath.Join(rootfs, "usr", "bin", "sh")); err != nil {
+		t.Fatalf("symlink broken /usr/bin/sh: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "bin", "sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write /bin/sh: %v", err)
+	}
+
+	got := resolveCommandInRootfs(rootfs, nil, []string{"/usr/bin/sh", "-c", "echo ok"})
+	if len(got) < 1 || got[0] != "/bin/sh" {
+		t.Fatalf("resolveCommandInRootfs returned %v, want first arg /bin/sh", got)
+	}
+}
+
 func TestRewriteKnownEntrypointCompatMSSQL(t *testing.T) {
 	got := rewriteKnownEntrypointCompat([]string{"/bin/bash", "/opt/mssql/bin/launch_sqlservr.sh", "/opt/mssql/bin/sqlservr"})
 	want := []string{"/opt/mssql/bin/sqlservr"}

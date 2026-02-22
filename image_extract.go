@@ -16,28 +16,42 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
+// normalizeSymlinkTarget validates a symlink target and rewrites absolute linknames
+// into relative paths so host-side path resolution does not escape the image rootfs.
+func normalizeSymlinkTarget(linkname, symlinkPath, rootfs string) (string, bool, error) {
+	symlinkDir := filepath.Dir(symlinkPath)
+	resolvedLinkTarget := ""
+	if filepath.IsAbs(linkname) {
+		cleanAbs := filepath.Clean(linkname)
+		resolvedLinkTarget = filepath.Join(rootfs, strings.TrimPrefix(cleanAbs, string(filepath.Separator)))
+	} else {
+		resolvedLinkTarget = filepath.Clean(filepath.Join(symlinkDir, linkname))
+	}
+
+	ok, err := isPathWithinBase(rootfs, resolvedLinkTarget)
+	if err != nil {
+		return "", false, fmt.Errorf("error checking symlink target safety: %w", err)
+	}
+	if !ok {
+		return "", false, fmt.Errorf("symlink target '%s' resolves outside rootfs '%s'", linkname, rootfs)
+	}
+
+	if filepath.IsAbs(linkname) {
+		rel, relErr := filepath.Rel(symlinkDir, resolvedLinkTarget)
+		if relErr != nil {
+			return "", false, fmt.Errorf("symlink target rewrite failed: %w", relErr)
+		}
+		return filepath.ToSlash(rel), true, nil
+	}
+
+	return linkname, true, nil
+}
+
 // isSymlinkTargetSafe checks if a symlink target (linkname) would resolve safely
 // within the rootfs when created at symlinkPath.
 func isSymlinkTargetSafe(linkname, symlinkPath, rootfs string) (bool, error) {
-	// 1. Reject absolute link names directly.
-	if filepath.IsAbs(linkname) {
-		return false, fmt.Errorf("absolute symlink target '%s' is not allowed", linkname)
-	}
-
-	// 2. Resolve linkname relative to the directory where the symlink itself will be placed.
-	symlinkDir := filepath.Dir(symlinkPath)
-	resolvedLinkTarget := filepath.Clean(filepath.Join(symlinkDir, linkname))
-
-	// 3. Use isPathWithinBase to check if this resolved target is within the overall rootfs.
-	ok, err := isPathWithinBase(rootfs, resolvedLinkTarget)
-	if err != nil {
-		return false, fmt.Errorf("error checking symlink target safety: %w", err)
-	}
-	if !ok {
-		return false, fmt.Errorf("symlink target '%s' resolves outside rootfs '%s'", linkname, rootfs)
-	}
-
-	return true, nil
+	_, ok, err := normalizeSymlinkTarget(linkname, symlinkPath, rootfs)
+	return ok, err
 }
 
 func dirSize(root string) (int64, error) {
@@ -153,7 +167,8 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 			f.Close()
 			_ = os.Chtimes(targetPath, time.Now(), h.ModTime)
 		case tar.TypeSymlink:
-			if ok, err := isSymlinkTargetSafe(h.Linkname, targetPath, rootfs); !ok {
+			normalizedLinkname, ok, err := normalizeSymlinkTarget(h.Linkname, targetPath, rootfs)
+			if !ok {
 				// Consider logging the error for debugging: log.Printf("Skipping unsafe symlink target: %v", err)
 				_ = err // Mark err as used to suppress compiler warning
 				continue
@@ -165,7 +180,7 @@ func extractLayer(rootfs string, layer v1.Layer, dirModes map[string]dirAttribut
 				continue
 			}
 			_ = os.RemoveAll(targetPath)
-			if err := os.Symlink(h.Linkname, targetPath); err != nil {
+			if err := os.Symlink(normalizedLinkname, targetPath); err != nil {
 				return fmt.Errorf("symlink failed: %w", err)
 			}
 		case tar.TypeLink:

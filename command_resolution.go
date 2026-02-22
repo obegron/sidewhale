@@ -51,7 +51,7 @@ func resolveBinaryPathInRootfs(rootfs string, env []string, cmd string) (string,
 
 	if strings.HasPrefix(cmd, "/") {
 		joined := filepath.Join(rootfs, strings.TrimPrefix(cmd, "/"))
-		if fileExists(joined) {
+		if commandPathExists(joined) {
 			return cmd, true
 		}
 	}
@@ -72,7 +72,7 @@ func resolveBinaryPathInRootfs(rootfs string, env []string, cmd string) (string,
 			continue
 		}
 		candidate := filepath.Join(rootfs, strings.TrimPrefix(dir, "/"), base)
-		if fileExists(candidate) {
+		if commandPathExists(candidate) {
 			return filepath.Join(dir, base), true
 		}
 	}
@@ -82,6 +82,14 @@ func resolveBinaryPathInRootfs(rootfs string, env []string, cmd string) (string,
 	}
 
 	return "", false
+}
+
+func commandPathExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func rewriteShebangCommand(rootfs string, env []string, cmdArgs []string) []string {

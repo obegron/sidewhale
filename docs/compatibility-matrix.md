@@ -40,7 +40,7 @@ Status legend:
 | MockServer | Confirmed | `:testcontainers-mockserver:test` passed in k8s upstream loop (`MockServerContainerTest`: standard, TLS, mTLS, and wait-strategy paths). |
 | Nginx module | Partial | Works only with Sidewhale nginx compat handling; privileged-port behavior is image-sensitive. |
 | LDAP (LLDAP) | Confirmed | `:testcontainers-ldap:test` passed in k8s upstream loop (`LLdapContainerTest`: default bind, URL-based bind, custom base DN, custom password). |
-| Kafka (single container) | Partial | Listener-based single-node flow (`KafkaContainerTest.testUsageWithListener`) passes on k8s backend. Current proot host run fails for `apache/kafka-native:3.8.0` with `proot error: 'sh' not found` (image/rootfs shell expectation mismatch). Broader Kafka matrix remains in progress. |
+| Kafka (single container) | Partial | Listener-based single-node flow (`KafkaContainerTest.testUsageWithListener`) now passes on both k8s and proot backends (verified with `--rerun-tasks`). Broader Kafka matrix remains in progress. |
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
 | Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
 | Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
