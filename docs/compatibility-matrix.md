@@ -44,7 +44,7 @@ Status legend:
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
 | Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
 | Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
-| DB2 | Unsupported | Startup/instance setup constraints not satisfied under current runtime model. |
+| DB2 | Unsupported | Pod-level startup is possible, but first-boot engine/database initialization is too slow/heavy for practical ephemeral Testcontainers usage in the current runtime model. |
 | Compose-based tests | Unsupported | Compose/network feature set is intentionally out of scope. |
 | ImageFromDockerfile/build flows | Unsupported | Build API not in MVP scope. |
 
