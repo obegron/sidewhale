@@ -54,6 +54,7 @@ func main() {
 		execs:      make(map[string]*ExecInstance),
 		stateDir:   cfg.stateDir,
 		proxies:    make(map[string][]*portProxy),
+		sshCompat:  make(map[string]*sshCompatServer),
 	}
 	if err := store.init(); err != nil {
 		fmt.Fprintf(os.Stderr, "state init failed: %v\n", err)

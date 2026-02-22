@@ -205,6 +205,28 @@ func (s *containerStore) stopProxies(id string) {
 	}
 }
 
+func (s *containerStore) setSSHCompat(id string, server *sshCompatServer) {
+	if server == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.sshCompat == nil {
+		s.sshCompat = make(map[string]*sshCompatServer)
+	}
+	s.sshCompat[id] = server
+	s.mu.Unlock()
+}
+
+func (s *containerStore) stopSSHCompat(id string) {
+	s.mu.Lock()
+	server := s.sshCompat[id]
+	delete(s.sshCompat, id)
+	s.mu.Unlock()
+	if server != nil {
+		server.stop()
+	}
+}
+
 func (s *containerStore) putExec(inst *ExecInstance) {
 	s.mu.Lock()
 	s.execs[inst.ID] = inst
@@ -238,6 +260,7 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	s.mu.Lock()
 	targets := make([]stopTarget, 0, len(s.containers))
 	extraProxyIDs := make([]string, 0, len(s.proxies))
+	extraSSHCompatIDs := make([]string, 0, len(s.sshCompat))
 	for _, c := range s.containers {
 		targets = append(targets, stopTarget{
 			id:         c.ID,
@@ -249,6 +272,9 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	for id := range s.proxies {
 		extraProxyIDs = append(extraProxyIDs, id)
 	}
+	for id := range s.sshCompat {
+		extraSSHCompatIDs = append(extraSSHCompatIDs, id)
+	}
 	s.mu.Unlock()
 
 	stopped := 0
@@ -256,6 +282,7 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 	for _, target := range targets {
 		knownIDs[target.id] = struct{}{}
 		s.stopProxies(target.id)
+		s.stopSSHCompat(target.id)
 		if target.running {
 			if target.pid > 0 {
 				terminateProcessTree(target.pid, grace)
@@ -274,6 +301,12 @@ func (s *containerStore) stopAllRunning(grace time.Duration) int {
 			continue
 		}
 		s.stopProxies(id)
+	}
+	for _, id := range extraSSHCompatIDs {
+		if _, ok := knownIDs[id]; ok {
+			continue
+		}
+		s.stopSSHCompat(id)
 	}
 	return stopped
 }

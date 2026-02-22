@@ -56,6 +56,20 @@ func envHasKey(env []string, key string) bool {
 	return false
 }
 
+func envValue(env []string, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	for _, item := range env {
+		k, v := splitEnv(item)
+		if k == key {
+			return v
+		}
+	}
+	return ""
+}
+
 func ensureEnvContainsToken(env []string, key, token string) []string {
 	key = strings.TrimSpace(key)
 	token = strings.TrimSpace(token)

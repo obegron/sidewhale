@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestApplyRedisRuntimeCompatAddsBind(t *testing.T) {
 	got := applyRedisRuntimeCompat([]string{"redis-server"}, "127.0.0.2")
@@ -83,15 +86,32 @@ func TestApplySSHDRuntimeCompatShellCommand(t *testing.T) {
 	if len(got) != len(in) {
 		t.Fatalf("len(got) = %d, want %d", len(got), len(in))
 	}
-	if got[2] != "echo ok && /usr/sbin/sshd -D -e -o ListenAddress=127.0.0.9 -p 2222" {
+	if !strings.Contains(got[2], "/usr/sbin/sshd -D") || !strings.Contains(got[2], " -e") || !strings.Contains(got[2], " -p 2222") {
 		t.Fatalf("unexpected rewritten shell cmd: %q", got[2])
+	}
+}
+
+func TestApplySSHDRuntimeCompatShellCommandAddsPortableUserCreation(t *testing.T) {
+	in := []string{"sh", "-c", "echo ${USERNAME}:${PASSWORD} | chpasswd && /usr/sbin/sshd -D"}
+	got := applySSHDRuntimeCompat(in, "127.0.0.9", 2222)
+	if !strings.Contains(got[2], "useradd -m") || !strings.Contains(got[2], "adduser -D") {
+		t.Fatalf("expected portable user creation fallback in rewritten shell cmd: %q", got[2])
+	}
+	if !strings.Contains(got[2], "USERNAME=root") {
+		t.Fatalf("expected default USERNAME=root fallback in rewritten shell cmd: %q", got[2])
+	}
+	if !strings.Contains(got[2], " -o Ciphers=") || !strings.Contains(got[2], " -o MACs=") {
+		t.Fatalf("expected legacy sshd algorithm options in rewritten shell cmd: %q", got[2])
+	}
+	if !strings.Contains(got[2], " -o UsePrivilegeSeparation=no") {
+		t.Fatalf("expected UsePrivilegeSeparation override in rewritten shell cmd: %q", got[2])
 	}
 }
 
 func TestApplySSHDRuntimeCompatDirectCommand(t *testing.T) {
 	in := []string{"/usr/sbin/sshd", "-D", "-e"}
 	got := applySSHDRuntimeCompat(in, "127.0.0.9", 2222)
-	want := []string{"/usr/sbin/sshd", "-D", "-e", "-o", "ListenAddress=127.0.0.9", "-p", "2222"}
+	want := []string{"/usr/sbin/sshd", "-D", "-e", "-p", "2222"}
 	if len(got) != len(want) {
 		t.Fatalf("len(got) = %d, want %d (%v)", len(got), len(want), got)
 	}

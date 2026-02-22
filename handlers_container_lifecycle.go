@@ -551,6 +551,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	cmdArgs = resolveCommandInRootfs(c.Rootfs, c.Env, cmdArgs)
 	runtimeEnv := append([]string{}, c.Env...)
 	runtimeTargets := clonePortTargets(c.PortTargets)
+	sshCompatPort := 0
 	ensureLoopbackIP := func() error {
 		_, err := ensureContainerLoopbackIP(store, c)
 		return err
@@ -591,8 +592,25 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		runtimeTargets[80] = c.LoopbackIP + ":8080"
 	}
 	if isSSHDImage(c.Image) {
-		// Keep upstream sshd command behavior to avoid process lifecycle
-		// differences across base images.
+		sshdCompatPort, allocErr := allocatePort()
+		if allocErr != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "start failed: ssh compat port allocation failed")
+			return
+		}
+		if runtimeBackend == runtimeBackendHost {
+			cmdArgs = []string{"sh", "-c", "while true; do sleep 3600; done"}
+			sshCompatPort = sshdCompatPort
+		} else {
+			cmdArgs = applySSHDRuntimeCompat(cmdArgs, c.LoopbackIP, sshdCompatPort)
+		}
+		runtimeTargets[22] = fmt.Sprintf("%s:%d", c.LoopbackIP, sshdCompatPort)
 	}
 
 	socketBinds, err := dockerSocketBindsForContainer(c, unixSocketPathFromContainerEnv(c.Env))
@@ -724,9 +742,32 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		return
 	}
 
+	if runtimeBackend == runtimeBackendHost && isSSHDImage(c.Image) {
+		password := envValue(runtimeEnv, "PASSWORD")
+		if password == "" {
+			password = envValue(c.Env, "PASSWORD")
+		}
+		server, sshErr := startSSHCompatServer(c.LoopbackIP, sshCompatPort, password)
+		if sshErr != nil {
+			_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+			closeLogs()
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "ssh compat start failed: "+sshErr.Error())
+			return
+		}
+		store.setSSHCompat(c.ID, server)
+	}
+
 	proxies, err := startPortProxies(c.Ports, runtimeTargets)
 	if err != nil {
 		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+		store.stopSSHCompat(c.ID)
 		closeLogs()
 		if reserved {
 			m.mu.Lock()
@@ -739,27 +780,6 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		return
 	}
 	store.setProxies(c.ID, proxies)
-	if isZookeeperImage(c.Image) {
-		target := strings.TrimSpace(runtimeTargets[2181])
-		if target == "" {
-			target = "127.0.0.1:2181"
-		}
-		if err := waitForStablePortTargets(r.Context(), map[int]string{2181: target}, 90*time.Second, 2); err != nil {
-			_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
-			store.stopProxies(c.ID)
-			closeLogs()
-			if reserved {
-				m.mu.Lock()
-				if m.running > 0 {
-					m.running--
-				}
-				m.mu.Unlock()
-			}
-			writeError(w, http.StatusInternalServerError, "port readiness failed: "+err.Error())
-			return
-		}
-	}
-
 	c.Running = true
 	c.Pid = cmd.Process.Pid
 	c.ExitCode = 0
@@ -769,6 +789,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	if err := store.saveContainer(c); err != nil {
 		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		store.stopProxies(c.ID)
+		store.stopSSHCompat(c.ID)
 		closeLogs()
 		if reserved {
 			m.mu.Lock()
@@ -797,6 +818,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		}
 		closeLogs()
 		store.stopProxies(c.ID)
+		store.stopSSHCompat(c.ID)
 		finishedAt := time.Now().UTC()
 		store.markStoppedWithExit(c.ID, &exitCode, finishedAt)
 		m.mu.Lock()
@@ -978,6 +1000,7 @@ func handleStop(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			_ = client.deletePod(r.Context(), c.K8sNamespace, c.K8sPodName, 2)
 		}
 		store.stopProxies(c.ID)
+		store.stopSSHCompat(c.ID)
 		exitCode := 137
 		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 		w.WriteHeader(http.StatusNoContent)
@@ -990,6 +1013,7 @@ func handleStop(w http.ResponseWriter, r *http.Request, store *containerStore, i
 
 	terminateProcessTree(c.Pid, 2*time.Second)
 	store.stopProxies(c.ID)
+	store.stopSSHCompat(c.ID)
 	exitCode := 137
 	store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	w.WriteHeader(http.StatusNoContent)
@@ -1007,6 +1031,7 @@ func handleKill(w http.ResponseWriter, r *http.Request, store *containerStore, i
 			_ = client.deletePod(r.Context(), c.K8sNamespace, c.K8sPodName, 0)
 		}
 		store.stopProxies(c.ID)
+		store.stopSSHCompat(c.ID)
 		exitCode := 137
 		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 		w.WriteHeader(http.StatusNoContent)
@@ -1018,6 +1043,7 @@ func handleKill(w http.ResponseWriter, r *http.Request, store *containerStore, i
 	}
 	terminateProcessTree(c.Pid, 0)
 	store.stopProxies(c.ID)
+	store.stopSSHCompat(c.ID)
 	exitCode := 137
 	store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	w.WriteHeader(http.StatusNoContent)
@@ -1039,6 +1065,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 			terminateProcessTree(c.Pid, 2*time.Second)
 		}
 		store.stopProxies(c.ID)
+		store.stopSSHCompat(c.ID)
 		exitCode := 137
 		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	}

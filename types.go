@@ -48,6 +48,7 @@ type containerStore struct {
 	execs      map[string]*ExecInstance
 	stateDir   string
 	proxies    map[string][]*portProxy
+	sshCompat  map[string]*sshCompatServer
 }
 
 type ExecInstance struct {

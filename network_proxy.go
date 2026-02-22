@@ -8,10 +8,20 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var proxyDebugEnabled = os.Getenv("SIDEWHALE_DEBUG_PROXY") == "1"
+
+func proxyDebugf(format string, args ...interface{}) {
+	if !proxyDebugEnabled {
+		return
+	}
+	fmt.Printf("sidewhale: "+format+"\n", args...)
+}
 
 func allocatePort() (int, error) {
 	ln, err := net.Listen("tcp", ":0")
@@ -251,6 +261,7 @@ func startPortProxy(hostPort, containerPort int, target string) (*portProxy, err
 	if err != nil {
 		return nil, err
 	}
+	proxyDebugf("proxy listen hostPort=%d containerPort=%d target=%s", hostPort, containerPort, target)
 	p := &portProxy{ln: ln, stop: make(chan struct{})}
 	go func() {
 		for {
@@ -263,6 +274,7 @@ func startPortProxy(hostPort, containerPort int, target string) (*portProxy, err
 					return
 				}
 			}
+			proxyDebugf("proxy accept hostPort=%d containerPort=%d target=%s remote=%s", hostPort, containerPort, target, conn.RemoteAddr())
 			go proxyConn(conn, containerPort, target)
 		}
 	}()
@@ -281,11 +293,13 @@ func (p *portProxy) stopProxy() {
 
 func proxyConn(src net.Conn, containerPort int, target string) {
 	defer src.Close()
+	proxyDebugf("proxy dial start containerPort=%d target=%s remote=%s", containerPort, target, src.RemoteAddr())
 	dst, err := dialContainerPort(containerPort, target)
 	if err != nil {
 		fmt.Printf("sidewhale: proxy dial failed containerPort=%d err=%v\n", containerPort, err)
 		return
 	}
+	proxyDebugf("proxy dial success containerPort=%d target=%s local=%s", containerPort, target, dst.LocalAddr())
 	defer dst.Close()
 	done := make(chan struct{})
 	var c2sBytes int64
@@ -307,6 +321,8 @@ func proxyConn(src net.Conn, containerPort int, target string) {
 	<-done
 	if c2sErr != nil || s2cErr != nil {
 		fmt.Printf("sidewhale: proxy closed containerPort=%d c2s=%d s2c=%d c2sErr=%v s2cErr=%v c2sSample=%s s2cSample=%s\n", containerPort, c2sBytes, s2cBytes, c2sErr, s2cErr, c2sSample, s2cSample)
+	} else {
+		proxyDebugf("proxy closed clean containerPort=%d c2s=%d s2c=%d", containerPort, c2sBytes, s2cBytes)
 	}
 }
 

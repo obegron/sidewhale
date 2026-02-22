@@ -53,15 +53,13 @@ func applyLLdapRuntimeCompatEnv(env []string, loopbackIP string) []string {
 }
 
 func applySSHDRuntimeCompat(cmdArgs []string, loopbackIP string, port int) []string {
-	ip := strings.TrimSpace(loopbackIP)
-	if len(cmdArgs) == 0 || ip == "" || port <= 0 {
+	if len(cmdArgs) == 0 || port <= 0 {
 		return cmdArgs
 	}
 	if hasArg(cmdArgs, "-p") {
 		return cmdArgs
 	}
 	portArg := strconv.Itoa(port)
-	listenArg := "ListenAddress=" + ip
 	if len(cmdArgs) >= 3 {
 		base := strings.ToLower(filepath.Base(strings.TrimSpace(cmdArgs[0])))
 		if (base == "sh" || base == "bash") && cmdArgs[1] == "-c" {
@@ -73,10 +71,25 @@ func applySSHDRuntimeCompat(cmdArgs []string, loopbackIP string, port int) []str
 				}
 				out := append([]string{}, cmdArgs...)
 				rewritten := script
+				if strings.Contains(lowerScript, "chpasswd") {
+					rewritten = "if [ -z \"${USERNAME:-}\" ]; then USERNAME=root; fi; if [ \"${USERNAME}\" != \"root\" ]; then id -u \"${USERNAME}\" >/dev/null 2>&1 || useradd -m \"${USERNAME}\" >/dev/null 2>&1 || adduser -D \"${USERNAME}\" >/dev/null 2>&1 || adduser \"${USERNAME}\" >/dev/null 2>&1 || true; fi; " + rewritten
+				}
 				if !strings.Contains(rewritten, " -e ") && !strings.HasSuffix(rewritten, " -e") {
 					rewritten += " -e"
 				}
-				rewritten += " -o " + listenArg + " -p " + portArg
+				if !strings.Contains(rewritten, " -o Ciphers=") {
+					rewritten += " -o Ciphers=+aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc"
+				}
+				if !strings.Contains(rewritten, " -o MACs=") {
+					rewritten += " -o MACs=+hmac-sha1,hmac-md5"
+				}
+				if !strings.Contains(rewritten, " -o PubkeyAcceptedAlgorithms=") {
+					rewritten += " -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+				}
+				if !strings.Contains(rewritten, " -o UsePrivilegeSeparation=") {
+					rewritten += " -o UsePrivilegeSeparation=no"
+				}
+				rewritten += " -p " + portArg
 				out[2] = rewritten
 				return out
 			}
@@ -88,7 +101,7 @@ func applySSHDRuntimeCompat(cmdArgs []string, loopbackIP string, port int) []str
 			if !hasArg(out, "-e") {
 				out = append(out, "-e")
 			}
-			out = append(out, "-o", listenArg, "-p", portArg)
+			out = append(out, "-p", portArg)
 			return out
 		}
 	}
