@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -134,9 +135,6 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		"image":           image,
 		"imagePullPolicy": "IfNotPresent",
 		"env":             env,
-		"securityContext": map[string]interface{}{
-			"runAsUser": 0,
-		},
 		"volumeMounts": []map[string]interface{}{
 			{
 				"name":      "dshm",
@@ -212,6 +210,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			},
 		},
 	}
+	appendWritableArchiveVolumes(c, containerSpec, podSpec)
 	if isOracle {
 		podSpec["securityContext"] = map[string]interface{}{
 			"fsGroup": 54321,
@@ -693,4 +692,47 @@ func k8sContainerTmpDir(c *Container) string {
 		return "/tmp"
 	}
 	return filepath.Join(filepath.Dir(c.Rootfs), "tmp")
+}
+
+func appendWritableArchiveVolumes(c *Container, containerSpec map[string]interface{}, podSpec map[string]interface{}) {
+	if c == nil {
+		return
+	}
+	volumeMounts, _ := containerSpec["volumeMounts"].([]map[string]interface{})
+	volumes, _ := podSpec["volumes"].([]map[string]interface{})
+	seen := map[string]struct{}{}
+
+	for _, p := range c.ArchivePaths {
+		mountPath, ok := archiveWritableMountPath(p)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[mountPath]; exists {
+			continue
+		}
+		seen[mountPath] = struct{}{}
+		name := "archive-" + strings.TrimPrefix(strings.ReplaceAll(mountPath, "/", "-"), "-")
+		volumes = append(volumes, map[string]interface{}{
+			"name":     name,
+			"emptyDir": map[string]interface{}{},
+		})
+		volumeMounts = append(volumeMounts, map[string]interface{}{
+			"name":      name,
+			"mountPath": mountPath,
+		})
+	}
+	containerSpec["volumeMounts"] = volumeMounts
+	podSpec["volumes"] = volumes
+}
+
+func archiveWritableMountPath(containerPath string) (string, bool) {
+	p := path.Clean("/" + strings.TrimSpace(containerPath))
+	switch {
+	case p == "/home", strings.HasPrefix(p, "/home/"):
+		return "/home", true
+	case p == "/data", strings.HasPrefix(p, "/data/"):
+		return "/data", true
+	default:
+		return "", false
+	}
 }
