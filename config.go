@@ -30,7 +30,7 @@ func initConfig() (appConfig, bool, error) {
 	k8sRuntimeNamespace := flag.String("k8s-runtime-namespace", "", "namespace for k8s runtime worker pods (default: sidewhale pod namespace)")
 	k8sImagePullSecrets := flag.String("k8s-image-pull-secrets", "", "comma-separated imagePullSecrets names for k8s worker pods")
 	k8sCleanupOrphans := flag.Bool("k8s-cleanup-orphans", true, "delete orphan sidewhale-managed worker pods during k8s reconcile")
-	maxConcurrent := flag.Int("max-concurrent", 4, "max concurrent containers (0 = unlimited)")
+	maxConcurrent := flag.Int("max-concurrent", 64, "max concurrent containers (0 = unlimited)")
 	maxRuntime := flag.Duration("max-runtime", 30*time.Minute, "max runtime per container (0 = unlimited)")
 	maxLogBytes := flag.Int64("max-log-bytes", 50*1024*1024, "max log size in bytes (0 = unlimited)")
 	maxMemBytes := flag.Int64("max-mem-bytes", 0, "soft memory limit in bytes (0 = unlimited)")

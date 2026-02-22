@@ -260,8 +260,9 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		m.mu.Lock()
 		m.running = currentRunning
 		if m.running >= limits.maxConcurrent {
+			current := m.running
 			m.mu.Unlock()
-			writeError(w, http.StatusConflict, "max concurrent containers reached")
+			writeError(w, http.StatusConflict, fmt.Sprintf("max concurrent containers reached (%d/%d)", current, limits.maxConcurrent))
 			return
 		}
 		m.running++
