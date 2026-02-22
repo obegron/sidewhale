@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -64,14 +65,20 @@ func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerSt
 			return
 		}
 		if err := writeArchiveFromK8sPod(w, r, client, c, containerPath); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				writeError(w, http.StatusNotFound, "path not found")
+			// For stopped containers, the pod may be gone while a local shadow rootfs
+			// still exists. Fall back to local filesystem in that case.
+			if c.Running {
+				if errors.Is(err, fs.ErrNotExist) {
+					writeError(w, http.StatusNotFound, "path not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "archive read failed: "+err.Error())
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "archive read failed: "+err.Error())
+			fmt.Printf("sidewhale: archive get fallback container=%s path=%s k8s_err=%v\n", c.ID, containerPath, err)
+		} else {
 			return
 		}
-		return
 	}
 
 	info, err := os.Lstat(targetPath)
@@ -139,10 +146,12 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 	}
 	tmpBase := filepath.Join(filepath.Dir(c.Rootfs), "tmp")
 	dirHint := strings.HasSuffix(queryPath, "/")
+	fmt.Printf("sidewhale: archive put begin container=%s path=%s content_length=%d pod=%s\n", c.ID, containerPath, r.ContentLength, c.K8sPodName)
 	top, touched, err := extractArchiveToPath(r.Body, targetPath, tmpBase, dirHint, containerPath == "/", func(dst string) string {
 		return mapArchiveDestinationPath(c, dst)
 	})
 	if err != nil {
+		fmt.Printf("sidewhale: archive put extract failed container=%s path=%s err=%v\n", c.ID, containerPath, err)
 		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
 		return
 	}
@@ -171,7 +180,7 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 		return
 	}
 
-	if strings.TrimSpace(c.K8sPodName) != "" {
+	if strings.TrimSpace(c.K8sPodName) != "" && c.Running {
 		client, err := newInClusterK8sClient()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
@@ -184,6 +193,8 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 				return
 			}
 		}
+	} else if strings.TrimSpace(c.K8sPodName) != "" && !c.Running {
+		fmt.Printf("sidewhale: archive put skip-k8s-sync container=%s reason=not_running\n", c.ID)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -544,15 +555,23 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		tw := tar.NewWriter(pw)
+		zw := gzip.NewWriter(pw)
+		tw := tar.NewWriter(zw)
 		if err := writePathToTar(tw, localPath, nameInTar); err != nil {
 			_ = pw.CloseWithError(err)
 			return
 		}
-		_ = tw.Close()
+		if err := tw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if err := zw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
 	}()
 
-	cmd := []string{"sh", "-lc", "mkdir -p " + shellQuote(dstParent) + " && tar -xf - -C " + shellQuote(dstParent)}
+	cmd := []string{"sh", "-lc", "mkdir -p " + shellQuote(dstParent) + " && tar -xzf - -C " + shellQuote(dstParent)}
 	out, errOut, code, err := client.execPodWithInput(ctx, c.K8sNamespace, c.K8sPodName, cmd, pr)
 	if err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -62,6 +63,21 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+	} else {
+		// Best effort for k8s mode: keep a local shadow rootfs so archive/read
+		// fallbacks on stopped containers can still work.
+		imageRootfs, meta, _, err = ensureImageWithFallback(
+			r.Context(),
+			resolvedRef,
+			req.Image,
+			store.stateDir,
+			nil,
+			trustInsecure,
+			ensureImage,
+		)
+		if err != nil {
+			fmt.Printf("sidewhale: k8s shadow rootfs not available image=%s err=%v\n", req.Image, err)
+		}
 	}
 	id, err := randomID(12)
 	if err != nil {
@@ -78,7 +94,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusInternalServerError, "rootfs allocation failed")
 		return
 	}
-	if runtimeBackend != runtimeBackendK8s {
+	if strings.TrimSpace(imageRootfs) != "" {
 		if err := copyDir(imageRootfs, rootfs); err != nil {
 			writeError(w, http.StatusInternalServerError, "rootfs copy failed")
 			return
@@ -389,6 +405,9 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		c.FinishedAt = podState.FinishedAt
 		c.K8sPodIP = podIP
 		c.PortTargets = targets
+		if !podState.Running {
+			tryReplayStoppedK8sContainerLocally(c)
+		}
 		if err := store.saveContainer(c); err != nil {
 			store.stopProxies(c.ID)
 			if reserved {
@@ -681,6 +700,113 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	go monitorContainer(c.ID, c.Pid, c.LogPath, store, limits)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func tryReplayStoppedK8sContainerLocally(c *Container) {
+	if c == nil {
+		return
+	}
+	if strings.TrimSpace(c.Rootfs) == "" {
+		return
+	}
+	// Best-effort replay for simple one-shot shell commands so files created by
+	// startup scripts can still be served via copy-from on stopped containers.
+	if len(c.Cmd) < 3 {
+		fmt.Printf("sidewhale: replay skipped container=%s reason=cmd_too_short\n", c.ID)
+		return
+	}
+	shell := filepath.Base(strings.TrimSpace(c.Cmd[0]))
+	if shell != "sh" && shell != "bash" {
+		fmt.Printf("sidewhale: replay skipped container=%s reason=unsupported_shell shell=%s\n", c.ID, shell)
+		return
+	}
+	if strings.TrimSpace(c.Cmd[1]) != "-c" {
+		fmt.Printf("sidewhale: replay skipped container=%s reason=missing_dash_c\n", c.ID)
+		return
+	}
+	originalScript := strings.TrimSpace(c.Cmd[2])
+	replayCmd := append([]string{}, c.Cmd...)
+	script := strings.TrimSpace(replayCmd[2])
+	if script != "" {
+		replayCmd[2] = "mkdir -p /home >/dev/null 2>&1; " + script
+	}
+	fmt.Printf("sidewhale: replay start container=%s cmd=%q\n", c.ID, strings.Join(replayCmd, " "))
+	tmpDir := containerTmpDir(c)
+	_ = os.MkdirAll(tmpDir, 0o1777)
+	_ = os.Chmod(tmpDir, 0o1777)
+	cmd, err := buildContainerCommand(c.Rootfs, tmpDir, c.WorkingDir, c.User, nil, replayCmd)
+	if err != nil {
+		fmt.Printf("sidewhale: replay failed container=%s stage=build err=%v\n", c.ID, err)
+		return
+	}
+	cmd.Dir = "/"
+	cmd.Env = deduplicateEnv(append(os.Environ(), ensureProotTmpDirEnv(c.Env)...))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	runCmd.Dir = cmd.Dir
+	runCmd.Env = cmd.Env
+	out, err := runCmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		fmt.Printf("sidewhale: replay failed container=%s stage=run err=%v output=%q\n", c.ID, err, trimmed)
+		if ok, ferr := materializeSimpleEchoRedirect(c.Rootfs, originalScript); ferr == nil && ok {
+			fmt.Printf("sidewhale: replay fallback=echo-redirect container=%s status=ok\n", c.ID)
+			return
+		} else if ferr != nil {
+			fmt.Printf("sidewhale: replay fallback=echo-redirect container=%s status=error err=%v\n", c.ID, ferr)
+		}
+		return
+	}
+	fmt.Printf("sidewhale: replay done container=%s\n", c.ID)
+}
+
+func materializeSimpleEchoRedirect(rootfs, script string) (bool, error) {
+	s := strings.TrimSpace(script)
+	if s == "" {
+		return false, nil
+	}
+	prefix := ""
+	newline := true
+	switch {
+	case strings.HasPrefix(s, "echo -n '"):
+		prefix = "echo -n '"
+		newline = false
+	case strings.HasPrefix(s, "echo '"):
+		prefix = "echo '"
+	default:
+		return false, nil
+	}
+	rest := strings.TrimPrefix(s, prefix)
+	parts := strings.SplitN(rest, "' >", 2)
+	if len(parts) != 2 {
+		return false, nil
+	}
+	content := parts[0]
+	target := strings.TrimSpace(parts[1])
+	if target == "" {
+		return false, nil
+	}
+	target = strings.Trim(target, "\"")
+	cleanTarget := path.Clean("/" + target)
+	relTarget := strings.TrimPrefix(cleanTarget, "/")
+	fullTarget, err := resolvePathUnder(rootfs, relTarget)
+	if err != nil {
+		return false, err
+	}
+	if _, err := ensureParentDir(rootfs, fullTarget); err != nil {
+		return false, err
+	}
+	if err := ensurePathUnderBase(rootfs, fullTarget); err != nil {
+		return false, err
+	}
+	if newline {
+		content += "\n"
+	}
+	if err := os.WriteFile(fullTarget, []byte(content), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func handleStop(w http.ResponseWriter, r *http.Request, store *containerStore, id string) {
