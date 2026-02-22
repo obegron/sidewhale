@@ -41,6 +41,25 @@ func TestApplyImageCompatKafkaTokenDedup(t *testing.T) {
 	}
 }
 
+func TestApplyImageCompatKafkaListenersRewrittenForBind(t *testing.T) {
+	initial := []string{"KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,BROKER://localhost:9093,TC-0://kafka:19092"}
+	env := applyImageCompat(initial, "kafka", "apache/kafka-native:3.8.0", "apache/kafka-native:3.8.0", "", "")
+	val := ""
+	for _, e := range env {
+		if k, v := splitEnv(e); k == "KAFKA_LISTENERS" {
+			val = v
+			break
+		}
+	}
+	if val == "" {
+		t.Fatalf("expected KAFKA_LISTENERS in env")
+	}
+	expected := "PLAINTEXT://0.0.0.0:9092,BROKER://0.0.0.0:9093,TC-0://0.0.0.0:19092"
+	if val != expected {
+		t.Fatalf("expected rewritten listeners %q, got %q", expected, val)
+	}
+}
+
 func TestApplyImageCompatAddsZookeeperJavaFlags(t *testing.T) {
 	env := applyImageCompat(nil, "zk", "library/zookeeper:3.8.0", "library/zookeeper:3.8.0", "", "")
 	jvmFlags := ""

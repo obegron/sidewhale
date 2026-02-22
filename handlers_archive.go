@@ -548,6 +548,9 @@ func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Containe
 	if err := patchCassandraConfigForK8s(c, containerPath, localPath); err != nil {
 		return err
 	}
+	if err := patchKafkaStartScriptForK8s(c, containerPath, localPath); err != nil {
+		return err
+	}
 	nameInTar := path.Base(containerPath)
 	if nameInTar == "." || nameInTar == "/" || nameInTar == "" {
 		nameInTar = filepath.Base(localPath)
@@ -717,6 +720,52 @@ func patchCassandraConfigForK8s(c *Container, containerPath, localPath string) e
 		return err
 	}
 	fmt.Printf("sidewhale: cassandra compat patched config path=%s pod_ip=%s broadcast_ip=%s\n", containerPath, podIP, broadcastIP)
+	return nil
+}
+
+func patchKafkaStartScriptForK8s(c *Container, containerPath, localPath string) error {
+	if c == nil {
+		return nil
+	}
+	image := containerRuntimeImage(c)
+	if !isKafkaImage(image) {
+		return nil
+	}
+	if normalizeArchiveContainerPath(containerPath) != "/tmp/testcontainers_start.sh" {
+		return nil
+	}
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	orig := string(raw)
+	lines := strings.Split(orig, "\n")
+	uriRe := regexp.MustCompile(`([A-Za-z0-9_-]+://)([^,:]+)(:[0-9]+)`)
+	changed := false
+	for i, line := range lines {
+		if !strings.Contains(line, "KAFKA_LISTENERS=") {
+			continue
+		}
+		rewritten := uriRe.ReplaceAllStringFunc(line, func(m string) string {
+			parts := uriRe.FindStringSubmatch(m)
+			if len(parts) != 4 {
+				return m
+			}
+			return parts[1] + "0.0.0.0" + parts[3]
+		})
+		if rewritten != line {
+			lines[i] = rewritten
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	updated := strings.Join(lines, "\n")
+	if err := os.WriteFile(localPath, []byte(updated), 0o755); err != nil {
+		return err
+	}
+	fmt.Printf("sidewhale: kafka compat patched start script path=%s image=%s\n", containerPath, image)
 	return nil
 }
 

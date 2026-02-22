@@ -82,7 +82,12 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 			if err != nil {
 				log.Printf("sidewhale: k8s exec failed pod=%s/%s cmd=%q err=%v", c.K8sNamespace, c.K8sPodName, k8sCmd, err)
 			}
-			traceK8sExec := isCassandraImage(c.Image) || isCassandraImage(c.ResolvedImage) || code != 0 || strings.Contains(strings.Join(k8sCmd, " "), "cqlsh")
+			joinedCmd := strings.Join(k8sCmd, " ")
+			traceK8sExec := isCassandraImage(c.Image) ||
+				isCassandraImage(c.ResolvedImage) ||
+				code != 0 ||
+				strings.Contains(joinedCmd, "cqlsh") ||
+				strings.Contains(joinedCmd, "kcat")
 			if err == nil && traceK8sExec {
 				log.Printf(
 					"sidewhale: k8s exec result pod=%s/%s cmd=%q exit=%d stdout=%q stderr=%q",

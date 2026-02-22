@@ -1,6 +1,9 @@
 package main
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, unixSocketPath, requestHost string) []string {
 	if !envHasKey(env, "HOSTNAME") && hostname != "" {
@@ -32,6 +35,9 @@ func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, uni
 		}
 		env = ensureEnvContainsToken(env, "KAFKA_OPTS", "-Dzookeeper.admin.enableServer=false")
 	}
+	if isKafkaImage(resolvedImage) || isKafkaImage(requestedImage) {
+		env = rewriteKafkaListenersForK8s(env)
+	}
 	if isZookeeperImage(resolvedImage) || isZookeeperImage(requestedImage) {
 		// Under proot, JVM container metrics may panic in cgroupv2 detection.
 		// Disable container support for zookeeper-family images by default.
@@ -42,4 +48,44 @@ func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, uni
 		env = mergeEnv(env, []string{"DOCKER_HOST=" + dockerHostForInnerClients(unixSocketPath, requestHost)})
 	}
 	return env
+}
+
+func rewriteKafkaListenersForK8s(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			out = append(out, kv)
+			continue
+		}
+		if strings.TrimSpace(key) != "KAFKA_LISTENERS" {
+			out = append(out, kv)
+			continue
+		}
+		parts := strings.Split(value, ",")
+		for i, part := range parts {
+			part = strings.TrimSpace(part)
+			lname, rhs, ok := strings.Cut(part, "://")
+			if !ok {
+				continue
+			}
+			host, port, ok := strings.Cut(rhs, ":")
+			if !ok {
+				continue
+			}
+			host = strings.TrimSpace(host)
+			port = strings.TrimSpace(port)
+			if port == "" {
+				continue
+			}
+			if host == "" {
+				host = "0.0.0.0"
+			} else {
+				host = "0.0.0.0"
+			}
+			parts[i] = lname + "://" + host + ":" + port
+		}
+		out = append(out, key+"="+strings.Join(parts, ","))
+	}
+	return out
 }

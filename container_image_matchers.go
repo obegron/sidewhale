@@ -22,6 +22,14 @@ func isConfluentKafkaImage(image string) bool {
 	return strings.Contains(image, "confluentinc/cp-kafka")
 }
 
+func isKafkaImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "/kafka:") ||
+		strings.HasSuffix(image, "/kafka") ||
+		strings.Contains(image, "apache/kafka") ||
+		strings.Contains(image, "confluentinc/cp-kafka")
+}
+
 func isRedisImage(image string) bool {
 	image = strings.ToLower(normalizeImageToken(image))
 	return strings.Contains(image, "redis")
