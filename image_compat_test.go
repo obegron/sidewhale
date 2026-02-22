@@ -64,6 +64,7 @@ func TestApplyImageCompatAddsZookeeperJavaFlags(t *testing.T) {
 	env := applyImageCompat(nil, "zk", "library/zookeeper:3.8.0", "library/zookeeper:3.8.0", "", "")
 	jvmFlags := ""
 	javaToolOptions := ""
+	jmxDisable := ""
 	for _, e := range env {
 		k, v := splitEnv(e)
 		if k == "JVMFLAGS" {
@@ -72,9 +73,12 @@ func TestApplyImageCompatAddsZookeeperJavaFlags(t *testing.T) {
 		if k == "JAVA_TOOL_OPTIONS" {
 			javaToolOptions = v
 		}
+		if k == "JMXDISABLE" {
+			jmxDisable = v
+		}
 	}
-	if jvmFlags == "" || javaToolOptions == "" {
-		t.Fatalf("expected both JVMFLAGS and JAVA_TOOL_OPTIONS, got %v", env)
+	if jvmFlags == "" || javaToolOptions == "" || jmxDisable == "" {
+		t.Fatalf("expected JVMFLAGS, JAVA_TOOL_OPTIONS, and JMXDISABLE, got %v", env)
 	}
 	if jvmFlags != "-XX:-UseContainerSupport" {
 		t.Fatalf("expected JVMFLAGS token, got %q", jvmFlags)
@@ -82,16 +86,21 @@ func TestApplyImageCompatAddsZookeeperJavaFlags(t *testing.T) {
 	if javaToolOptions != "-XX:-UseContainerSupport" {
 		t.Fatalf("expected JAVA_TOOL_OPTIONS token, got %q", javaToolOptions)
 	}
+	if jmxDisable != "true" {
+		t.Fatalf("expected JMXDISABLE=true, got %q", jmxDisable)
+	}
 }
 
 func TestApplyImageCompatZookeeperTokenDedup(t *testing.T) {
 	initial := []string{
 		"JVMFLAGS=-Xmx256m -XX:-UseContainerSupport",
 		"JAVA_TOOL_OPTIONS=-Dfoo=bar -XX:-UseContainerSupport",
+		"JMXDISABLE=false",
 	}
 	env := applyImageCompat(initial, "zk", "confluentinc/cp-zookeeper:6.2.1", "confluentinc/cp-zookeeper:6.2.1", "", "")
 	jvmFlags := ""
 	javaToolOptions := ""
+	jmxDisable := ""
 	for _, e := range env {
 		k, v := splitEnv(e)
 		if k == "JVMFLAGS" {
@@ -100,11 +109,17 @@ func TestApplyImageCompatZookeeperTokenDedup(t *testing.T) {
 		if k == "JAVA_TOOL_OPTIONS" {
 			javaToolOptions = v
 		}
+		if k == "JMXDISABLE" {
+			jmxDisable = v
+		}
 	}
 	if jvmFlags != "-Xmx256m -XX:-UseContainerSupport" {
 		t.Fatalf("unexpected JVMFLAGS %q", jvmFlags)
 	}
 	if javaToolOptions != "-Dfoo=bar -XX:-UseContainerSupport" {
 		t.Fatalf("unexpected JAVA_TOOL_OPTIONS %q", javaToolOptions)
+	}
+	if jmxDisable != "false" {
+		t.Fatalf("expected existing JMXDISABLE preserved, got %q", jmxDisable)
 	}
 }

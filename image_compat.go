@@ -43,6 +43,12 @@ func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, uni
 		// Disable container support for zookeeper-family images by default.
 		env = ensureEnvContainsToken(env, "JVMFLAGS", "-XX:-UseContainerSupport")
 		env = ensureEnvContainsToken(env, "JAVA_TOOL_OPTIONS", "-XX:-UseContainerSupport")
+		// Default zookeeper startup enables JMX, which triggers JVM platform
+		// metrics initialization and can crash on constrained cgroup layouts.
+		// Disable JMX unless the caller explicitly sets it.
+		if !envHasKey(env, "JMXDISABLE") {
+			env = append(env, "JMXDISABLE=true")
+		}
 	}
 	if isRyukImage(resolvedImage) || isRyukImage(requestedImage) {
 		env = mergeEnv(env, []string{"DOCKER_HOST=" + dockerHostForInnerClients(unixSocketPath, requestHost)})
