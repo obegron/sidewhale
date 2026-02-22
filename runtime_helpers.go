@@ -92,6 +92,12 @@ func requestTimeoutFor(r *http.Request) time.Duration {
 	if r.Method == http.MethodPost && strings.HasSuffix(path, "/wait") {
 		return 0
 	}
+	// Archive upload/download can be large and legitimately long-lived.
+	if strings.HasSuffix(path, "/archive") {
+		if r.Method == http.MethodPut || r.Method == http.MethodGet {
+			return 10 * time.Minute
+		}
+	}
 	return 30 * time.Second
 }
 

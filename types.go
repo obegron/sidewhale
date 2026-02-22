@@ -37,6 +37,7 @@ type Container struct {
 	K8sNamespace  string              `json:"K8sNamespace,omitempty"`
 	K8sPodName    string              `json:"K8sPodName,omitempty"`
 	K8sPodIP      string              `json:"K8sPodIP,omitempty"`
+	ArchivePaths  []string            `json:"ArchivePaths,omitempty"`
 }
 
 type containerStore struct {

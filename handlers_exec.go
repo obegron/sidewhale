@@ -102,6 +102,7 @@ func handleExecStart(w http.ResponseWriter, r *http.Request, store *containerSto
 			return
 		}
 		cmd.Dir = "/"
+		execEnv = ensureProotTmpDirEnv(execEnv)
 		cmd.Env = deduplicateEnv(append(os.Environ(), execEnv...))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Stdout = &stdoutBuf

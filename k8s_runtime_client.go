@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -354,23 +355,39 @@ func (k *k8sClient) deletePod(ctx context.Context, namespace, name string, grace
 }
 
 func (k *k8sClient) podLogs(ctx context.Context, namespace, name string) ([]byte, error) {
+	rc, err := k.openPodLogs(ctx, namespace, name, false)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+func (k *k8sClient) podLogsFollow(ctx context.Context, namespace, name string) (io.ReadCloser, error) {
+	return k.openPodLogs(ctx, namespace, name, true)
+}
+
+func (k *k8sClient) openPodLogs(ctx context.Context, namespace, name string, follow bool) (io.ReadCloser, error) {
 	ns := strings.TrimSpace(namespace)
 	if ns == "" {
 		ns = k.namespace
 	}
 	v := url.Values{}
 	v.Set("container", k8sRuntimeContainerName)
+	if follow {
+		v.Set("follow", "true")
+	}
 	path := "/api/v1/namespaces/" + url.PathEscape(ns) + "/pods/" + url.PathEscape(name) + "/log?" + v.Encode()
 	resp, err := k.doJSON(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("pod logs failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	return io.ReadAll(resp.Body)
+	return resp.Body, nil
 }
 
 func (k *k8sClient) doJSON(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
@@ -392,6 +409,10 @@ func (k *k8sClient) doJSON(ctx context.Context, method, path string, body []byte
 }
 
 func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []string) ([]byte, []byte, int, error) {
+	return k.execPodWithInput(ctx, namespace, name, cmd, nil)
+}
+
+func (k *k8sClient) execPodWithInput(ctx context.Context, namespace, name string, cmd []string, stdin io.Reader) ([]byte, []byte, int, error) {
 	if len(cmd) == 0 {
 		return nil, nil, 126, fmt.Errorf("missing exec command")
 	}
@@ -411,7 +432,7 @@ func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []s
 	u.Path = "/api/v1/namespaces/" + url.PathEscape(ns) + "/pods/" + url.PathEscape(name) + "/exec"
 	q := url.Values{}
 	q.Set("container", k8sRuntimeContainerName)
-	q.Set("stdin", "false")
+	q.Set("stdin", strconv.FormatBool(stdin != nil))
 	q.Set("stdout", "true")
 	q.Set("stderr", "true")
 	q.Set("tty", "false")
@@ -429,7 +450,7 @@ func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []s
 	if strings.TrimSpace(k.token) != "" {
 		header.Set("Authorization", "Bearer "+k.token)
 	}
-	header.Set("Sec-WebSocket-Protocol", "v4.channel.k8s.io")
+	header.Set("Sec-WebSocket-Protocol", "v5.channel.k8s.io, v4.channel.k8s.io")
 	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		if resp != nil {
@@ -440,22 +461,58 @@ func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []s
 		return nil, nil, 126, err
 	}
 	defer conn.Close()
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	var stdinErr error
+	stdinDone := make(chan struct{})
+	if stdin != nil {
+		go func() {
+			defer close(stdinDone)
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := stdin.Read(buf)
+				if n > 0 {
+					frame := make([]byte, n+1)
+					frame[0] = 0 // stdin channel
+					copy(frame[1:], buf[:n])
+					if wErr := conn.WriteMessage(websocket.BinaryMessage, frame); wErr != nil {
+						stdinErr = wErr
+						return
+					}
+				}
+				if errors.Is(err, io.EOF) {
+					// Close stdin stream (channel 0) while keeping stdout/stderr streams open.
+					_ = conn.WriteMessage(websocket.BinaryMessage, []byte{255, 0})
+					return
+				}
+				if err != nil {
+					stdinErr = err
+					return
+				}
+			}
+		}()
+	} else {
+		close(stdinDone)
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	exitCode := 0
 	for {
-		if ctx.Err() != nil {
-			return stdout.Bytes(), stderr.Bytes(), 126, ctx.Err()
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		msgType, payload, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				break
 			}
-			if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
-				continue
+			<-stdinDone
+			if stdinErr != nil {
+				return stdout.Bytes(), stderr.Bytes(), 126, stdinErr
+			}
+			if ctx.Err() != nil {
+				return stdout.Bytes(), stderr.Bytes(), 126, ctx.Err()
 			}
 			break
 		}
@@ -486,6 +543,10 @@ func (k *k8sClient) execPod(ctx context.Context, namespace, name string, cmd []s
 				}
 			}
 		}
+	}
+	<-stdinDone
+	if stdinErr != nil {
+		return stdout.Bytes(), stderr.Bytes(), 126, stdinErr
 	}
 	return stdout.Bytes(), stderr.Bytes(), exitCode, nil
 }

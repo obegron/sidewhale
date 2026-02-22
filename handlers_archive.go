@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -48,11 +49,31 @@ func handleArchiveGet(w http.ResponseWriter, r *http.Request, store *containerSt
 		return
 	}
 	queryPath := strings.TrimSpace(r.URL.Query().Get("path"))
-	targetPath, err := resolvePathInContainerFS(c, queryPath)
+	containerPath := normalizeArchiveContainerPath(queryPath)
+	targetPath, err := resolvePathInContainerFS(c, containerPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid archive path")
 		return
 	}
+
+	// In k8s mode, read archive directly from the running pod when available.
+	if strings.TrimSpace(c.K8sPodName) != "" {
+		client, err := newInClusterK8sClient()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "archive read failed: "+err.Error())
+			return
+		}
+		if err := writeArchiveFromK8sPod(w, r, client, c, containerPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "path not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "archive read failed: "+err.Error())
+			return
+		}
+		return
+	}
+
 	info, err := os.Lstat(targetPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -110,27 +131,58 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 		return
 	}
 	queryPath := strings.TrimSpace(r.URL.Query().Get("path"))
-	targetPath, err := resolvePathInContainerFS(c, queryPath)
+	containerPath := normalizeArchiveContainerPath(queryPath)
+	targetPath, err := resolvePathInContainerFS(c, containerPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid archive path")
 		return
 	}
 	tmpBase := filepath.Join(filepath.Dir(c.Rootfs), "tmp")
-	if err := extractArchiveToPath(r.Body, targetPath, tmpBase, func(dst string) string {
+	dirHint := strings.HasSuffix(queryPath, "/")
+	top, touched, err := extractArchiveToPath(r.Body, targetPath, tmpBase, dirHint, containerPath == "/", func(dst string) string {
 		return mapArchiveDestinationPath(c, dst)
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
 		return
 	}
+
+	trackedPaths := deduplicatePaths(localPathsToContainerPaths(c, touched))
+	if len(trackedPaths) == 0 {
+		if containerPath == "/" {
+			for _, entry := range top {
+				entry = strings.Trim(strings.TrimSpace(entry), "/")
+				if entry == "" {
+					continue
+				}
+				trackedPaths = append(trackedPaths, "/"+entry)
+			}
+		} else {
+			trackedPaths = append(trackedPaths, containerPath)
+		}
+		trackedPaths = deduplicatePaths(trackedPaths)
+	}
+	for _, p := range trackedPaths {
+		addArchivePath(c, p)
+	}
+	fmt.Printf("sidewhale: archive put container=%s path=%s pod=%s\n", c.ID, containerPath, c.K8sPodName)
+	if err := store.saveContainer(c); err != nil {
+		writeError(w, http.StatusInternalServerError, "state write failed")
+		return
+	}
+
 	if strings.TrimSpace(c.K8sPodName) != "" {
 		client, err := newInClusterK8sClient()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
 			return
 		}
-		if err := syncContainerTmpToK8sPod(r.Context(), client, c); err != nil {
-			writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
-			return
+		for _, archivePath := range trackedPaths {
+			if err := syncArchivePathToK8sPod(r.Context(), client, c, archivePath); err != nil {
+				fmt.Printf("sidewhale: archive immediate sync failed container=%s path=%s err=%v\n", c.ID, archivePath, err)
+				writeError(w, http.StatusInternalServerError, "archive sync failed: "+err.Error())
+				return
+			}
 		}
 	}
 	w.WriteHeader(http.StatusOK)
@@ -156,6 +208,18 @@ func resolvePathInContainerFS(c *Container, requested string) (string, error) {
 	return resolvePathUnder(c.Rootfs, relRoot)
 }
 
+func normalizeArchiveContainerPath(requested string) string {
+	req := strings.TrimSpace(requested)
+	if req == "" {
+		return ""
+	}
+	clean := path.Clean("/" + req)
+	if clean == "." {
+		return "/"
+	}
+	return clean
+}
+
 func resolvePathUnder(base string, rel string) (string, error) {
 	full := filepath.Join(base, filepath.FromSlash(rel))
 	baseClean := filepath.Clean(base)
@@ -169,25 +233,34 @@ func resolvePathUnder(base string, rel string) (string, error) {
 	return full, nil
 }
 
-func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(string) string) error {
+func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, targetDirHint bool, preserveTopDir bool, mapDst func(string) string) ([]string, []string, error) {
 	base := strings.TrimSpace(tmpBase)
 	if base == "" {
 		base = os.TempDir()
 	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
-		return err
+		return nil, nil, err
 	}
 	tmpDir, err := os.MkdirTemp(base, "sidewhale-archive-*")
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(tmpDir)
 
 	top, err := untarToDir(r, tmpDir)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if len(top) == 0 {
+		return top, nil, nil
+	}
+	touched := []string{}
+	addTouched := func(srcPath, dstPath string) error {
+		paths, err := collectSyncTargets(srcPath, dstPath)
+		if err != nil {
+			return err
+		}
+		touched = append(touched, paths...)
 		return nil
 	}
 
@@ -195,60 +268,190 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, mapDst func(s
 	targetExists := statErr == nil
 	targetBase := mapArchivePath(targetPath, mapDst)
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
-		return statErr
+		return nil, nil, statErr
 	}
-	if targetExists && info.IsDir() {
+	if !targetExists && targetDirHint {
+		if err := os.MkdirAll(targetBase, 0o755); err != nil {
+			return nil, nil, err
+		}
 		entries, err := os.ReadDir(tmpDir)
 		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(targetBase, 0o755); err != nil {
-			return err
-		}
-		// Docker archive extraction into an existing directory behaves like "extract contents".
-		// When the archive has a single top-level directory, flatten it so files land directly
-		// under the destination directory (for example /etc/mysql/conf.d/my.cnf).
-		if len(entries) == 1 && entries[0].IsDir() {
-			innerEntries, err := os.ReadDir(filepath.Join(tmpDir, entries[0].Name()))
-			if err != nil {
-				return err
-			}
-			for _, entry := range innerEntries {
-				src := filepath.Join(tmpDir, entries[0].Name(), entry.Name())
-				dst := filepath.Join(targetPath, entry.Name())
-				if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
-					return err
-				}
-			}
-			return nil
+			return nil, nil, err
 		}
 		for _, entry := range entries {
 			src := filepath.Join(tmpDir, entry.Name())
 			dst := filepath.Join(targetPath, entry.Name())
-			if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
-				return err
+			if err := copyArchiveFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+				return nil, nil, err
+			}
+			if err := addTouched(src, dst); err != nil {
+				return nil, nil, err
 			}
 		}
-		return nil
+		return top, deduplicatePaths(touched), nil
+	}
+	if targetExists && info.IsDir() {
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := os.MkdirAll(targetBase, 0o755); err != nil {
+			return nil, nil, err
+		}
+		// Docker archive extraction into an existing directory behaves like "extract contents".
+		// When the archive has a single top-level directory, flatten it so files land directly
+		// under the destination directory (for example /etc/mysql/conf.d/my.cnf).
+		if !preserveTopDir && len(entries) == 1 && entries[0].IsDir() {
+			innerEntries, err := os.ReadDir(filepath.Join(tmpDir, entries[0].Name()))
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, entry := range innerEntries {
+				src := filepath.Join(tmpDir, entries[0].Name(), entry.Name())
+				dst := filepath.Join(targetPath, entry.Name())
+				if err := copyArchiveFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+					return nil, nil, err
+				}
+				if err := addTouched(src, dst); err != nil {
+					return nil, nil, err
+				}
+			}
+			return top, deduplicatePaths(touched), nil
+		}
+		for _, entry := range entries {
+			src := filepath.Join(tmpDir, entry.Name())
+			dst := filepath.Join(targetPath, entry.Name())
+			if err := copyArchiveFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+				return nil, nil, err
+			}
+			if err := addTouched(src, dst); err != nil {
+				return nil, nil, err
+			}
+		}
+		return top, deduplicatePaths(touched), nil
 	}
 	if len(top) == 1 {
-		return copyFSNode(tmpDir, filepath.Join(tmpDir, top[0]), targetBase, targetBase)
+		src := filepath.Join(tmpDir, top[0])
+		dstBase := targetBase
+		parent := filepath.Dir(targetBase)
+		if err := ensurePathUnderBase(dstBase, parent); err != nil {
+			dstBase = parent
+		}
+		if err := copyFSNode(tmpDir, src, dstBase, targetBase); err != nil {
+			return nil, nil, err
+		}
+		if err := addTouched(src, targetPath); err != nil {
+			return nil, nil, err
+		}
+		return top, deduplicatePaths(touched), nil
 	}
 	if err := os.MkdirAll(targetBase, 0o755); err != nil {
-		return err
+		return nil, nil, err
 	}
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	for _, entry := range entries {
 		src := filepath.Join(tmpDir, entry.Name())
 		dst := filepath.Join(targetPath, entry.Name())
-		if err := copyFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
-			return err
+		if err := copyArchiveFSNode(tmpDir, src, targetBase, mapArchivePath(dst, mapDst)); err != nil {
+			return nil, nil, err
+		}
+		if err := addTouched(src, dst); err != nil {
+			return nil, nil, err
 		}
 	}
-	return nil
+	return top, deduplicatePaths(touched), nil
+}
+
+func copyArchiveFSNode(srcBase, src, targetBase, targetPath string) error {
+	dstBase := targetBase
+	if err := ensurePathUnderBase(dstBase, targetPath); err != nil {
+		parent := filepath.Dir(targetBase)
+		if ensurePathUnderBase(parent, targetPath) == nil {
+			dstBase = parent
+		}
+	}
+	return copyFSNode(srcBase, src, dstBase, targetPath)
+}
+
+func collectSyncTargets(srcPath, dstPath string) ([]string, error) {
+	info, err := os.Lstat(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return []string{filepath.ToSlash(dstPath)}, nil
+	}
+	out := []string{}
+	err = filepath.WalkDir(srcPath, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcPath, p)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(filepath.Join(dstPath, rel)))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func deduplicatePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]struct{}{}
+	for _, p := range paths {
+		p = normalizeArchiveContainerPath(filepath.ToSlash(strings.TrimSpace(p)))
+		if p == "" || p == "/" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func localPathsToContainerPaths(c *Container, paths []string) []string {
+	if c == nil {
+		return nil
+	}
+	rootfs := filepath.Clean(c.Rootfs)
+	tmp := filepath.Clean(containerTmpDir(c))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if rel, err := filepath.Rel(tmp, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if rel == "." || rel == "" {
+				out = append(out, "/tmp")
+			} else {
+				out = append(out, "/tmp/"+filepath.ToSlash(rel))
+			}
+			continue
+		}
+		if rel, err := filepath.Rel(rootfs, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if rel == "." || rel == "" {
+				out = append(out, "/")
+			} else {
+				out = append(out, "/"+filepath.ToSlash(rel))
+			}
+			continue
+		}
+	}
+	return out
 }
 
 func mapArchivePath(path string, mapDst func(string) string) string {
@@ -280,6 +483,136 @@ func mapArchiveDestinationPath(c *Container, dst string) string {
 		return dst
 	}
 	return mapped
+}
+
+func addArchivePath(c *Container, containerPath string) {
+	if c == nil {
+		return
+	}
+	cp := normalizeArchiveContainerPath(containerPath)
+	if cp == "" {
+		return
+	}
+	for _, existing := range c.ArchivePaths {
+		if existing == cp {
+			return
+		}
+	}
+	c.ArchivePaths = append(c.ArchivePaths, cp)
+}
+
+func syncPendingArchivePathsToK8sPod(ctx context.Context, client *k8sClient, c *Container) error {
+	if c == nil || client == nil || strings.TrimSpace(c.K8sPodName) == "" {
+		return nil
+	}
+	for _, containerPath := range c.ArchivePaths {
+		fmt.Printf("sidewhale: archive replay container=%s path=%s pod=%s\n", c.ID, containerPath, c.K8sPodName)
+		if err := syncArchivePathToK8sPod(ctx, client, c, containerPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncArchivePathToK8sPod(ctx context.Context, client *k8sClient, c *Container, containerPath string) error {
+	if c == nil || client == nil || strings.TrimSpace(c.K8sPodName) == "" {
+		return nil
+	}
+	containerPath = normalizeArchiveContainerPath(containerPath)
+	if containerPath == "" || containerPath == "/" {
+		return nil
+	}
+	localPath, err := resolvePathInContainerFS(c, containerPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(localPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	nameInTar := path.Base(containerPath)
+	if nameInTar == "." || nameInTar == "/" || nameInTar == "" {
+		nameInTar = filepath.Base(localPath)
+	}
+	dstParent := path.Dir(containerPath)
+	if dstParent == "." || dstParent == "" {
+		dstParent = "/"
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		tw := tar.NewWriter(pw)
+		if err := writePathToTar(tw, localPath, nameInTar); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = tw.Close()
+	}()
+
+	cmd := []string{"sh", "-lc", "mkdir -p " + shellQuote(dstParent) + " && tar -xf - -C " + shellQuote(dstParent)}
+	out, errOut, code, err := client.execPodWithInput(ctx, c.K8sNamespace, c.K8sPodName, cmd, pr)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sidewhale: archive k8s sync container=%s path=%s exit=%d stderr=%q\n", c.ID, containerPath, code, strings.TrimSpace(string(errOut)))
+	if code != 0 {
+		return fmt.Errorf("k8s archive sync failed path=%s exit=%d stderr=%s stdout=%s", containerPath, code, strings.TrimSpace(string(errOut)), strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func writeArchiveFromK8sPod(w http.ResponseWriter, r *http.Request, client *k8sClient, c *Container, containerPath string) error {
+	if client == nil || c == nil {
+		return fmt.Errorf("invalid archive context")
+	}
+	containerPath = normalizeArchiveContainerPath(containerPath)
+	if containerPath == "" {
+		return fmt.Errorf("missing path")
+	}
+	dstParent := path.Dir(containerPath)
+	if dstParent == "." || dstParent == "" {
+		dstParent = "/"
+	}
+	name := path.Base(containerPath)
+	if name == "." || name == "" {
+		name = path.Base(path.Clean(containerPath))
+	}
+	if name == "." || name == "/" || name == "" {
+		name = "archive"
+	}
+
+	cmd := []string{"sh", "-lc", "tar -cf - -C " + shellQuote(dstParent) + " " + shellQuote(name)}
+	out, errOut, code, err := client.execPod(r.Context(), c.K8sNamespace, c.K8sPodName, cmd)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		trim := strings.TrimSpace(string(errOut))
+		if strings.Contains(trim, "No such file") || strings.Contains(trim, "Cannot stat") || strings.Contains(trim, "not found") {
+			return fs.ErrNotExist
+		}
+		return fmt.Errorf("k8s archive read failed: exit=%d stderr=%s", code, trim)
+	}
+
+	statPayload := map[string]interface{}{
+		"name":       name,
+		"size":       len(out),
+		"mode":       uint32(fs.ModePerm),
+		"mtime":      time.Now().UTC().Format(time.RFC3339Nano),
+		"linkTarget": "",
+	}
+	statJSON, err := json.Marshal(statPayload)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(statJSON))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+	return nil
 }
 
 func untarToDir(r io.Reader, dst string) ([]string, error) {

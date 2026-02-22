@@ -271,7 +271,18 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		}
 		client.imagePullSecrets = append([]string{}, k8sImagePullSecrets...)
 		if c.K8sPodName == "" {
-			hostAliasMap := mergeContainerHostAliases(store.peerHostAliasesForContainer(c.ID), c.ExtraHosts)
+			hostAliasMap := store.peerHostAliasesForContainer(c.ID)
+			for host, ip := range store.selfHostAliasesForContainer(c.ID) {
+				if _, exists := hostAliasMap[host]; !exists {
+					hostAliasMap[host] = ip
+				}
+			}
+			for host, ip := range kafkaListenerHostAliases(c) {
+				if _, exists := hostAliasMap[host]; !exists {
+					hostAliasMap[host] = ip
+				}
+			}
+			hostAliasMap = mergeContainerHostAliases(hostAliasMap, c.ExtraHosts)
 			podName, err := client.createPod(r.Context(), c, hostAliasMap)
 			if err != nil {
 				if reserved {
@@ -317,6 +328,20 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 			return
 		}
 		if err := syncContainerTmpToK8sPod(r.Context(), client, c); err != nil {
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			m.mu.Lock()
+			m.startFailures++
+			m.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+			return
+		}
+		if err := syncPendingArchivePathsToK8sPod(r.Context(), client, c); err != nil {
 			if reserved {
 				m.mu.Lock()
 				if m.running > 0 {
@@ -517,6 +542,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	cmd.Dir = "/"
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	runtimeEnv = applyTiniRuntimeCompatEnv(runtimeEnv, cmdArgs)
+	runtimeEnv = ensureProotTmpDirEnv(runtimeEnv)
 	cmd.Env = deduplicateEnv(append(os.Environ(), runtimeEnv...))
 
 	logFile, err := os.OpenFile(c.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

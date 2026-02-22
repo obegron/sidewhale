@@ -99,3 +99,10 @@ func deduplicateEnv(env []string) []string {
 	}
 	return out
 }
+
+func ensureProotTmpDirEnv(env []string) []string {
+	if envHasKey(env, "PROOT_TMP_DIR") {
+		return env
+	}
+	return append(env, "PROOT_TMP_DIR=/tmp")
+}
