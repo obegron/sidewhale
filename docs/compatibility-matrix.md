@@ -1,6 +1,6 @@
 # Sidewhale Compatibility Matrix (Host Backend)
 
-Last updated: 2026-02-14
+Last updated: 2026-02-22
 
 This matrix reflects what we validated in the current upstream test loop (`testcontainers-java` + Sidewhale host backend with `proot`).
 
@@ -40,7 +40,7 @@ Status legend:
 | LDAP (LLDAP) | Partial | Startup behavior improved, but reliability issues remain (bind/process cleanup edge cases). |
 | Kafka (single container) | Partial | Some single-node flows can run; cluster scenarios are limited by DNS/network semantics. |
 | Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
-| Cassandra | Partial | Hostname/name-resolution sensitivity observed (`UnknownHostException` patterns). |
+| Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
 | Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
 | DB2 | Unsupported | Startup/instance setup constraints not satisfied under current runtime model. |
 | Compose-based tests | Unsupported | Compose/network feature set is intentionally out of scope. |
