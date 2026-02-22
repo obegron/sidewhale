@@ -241,7 +241,12 @@ integration-test-upstream-k8s:
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) get svc sidewhale >/dev/null; \
 	sidewhale_host="$(K8S_SIDEWHALE_DOCKER_HOST)"; \
 	if [ -z "$$sidewhale_host" ]; then \
-		sidewhale_host="tcp://sidewhale.$(K8S_NAMESPACE).svc.cluster.local:23750"; \
+		endpoint_ip="$$(kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) get endpoints sidewhale -o jsonpath='{.subsets[0].addresses[0].ip}')"; \
+		if [ -z "$$endpoint_ip" ]; then \
+			echo "failed to resolve sidewhale endpoint IP"; \
+			exit 1; \
+		fi; \
+		sidewhale_host="tcp://$$endpoint_ip:23750"; \
 	fi; \
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_UPSTREAM_JOB_NAME) --ignore-not-found >/dev/null; \
 	K8S_UPSTREAM_JOB_NAME="$(K8S_UPSTREAM_JOB_NAME)" \
