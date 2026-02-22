@@ -8,7 +8,7 @@ GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X 'main.version=$(VERSION)' -X 'main.gitCommit=$(GIT_COMMIT)' -X 'main.buildTime=$(BUILD_TIME)'
 
-.PHONY: help build image docker-build docker-push image-run smoke-pull integration-test integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean integration-test-kafka-log-stream-k8s integration-test-kafka-log-stream-k8s-clean integration-test-kafka-upstream-shape-k8s integration-test-kafka-upstream-shape-k8s-clean clean
+.PHONY: help build image docker-build docker-push image-run smoke-pull integration-test integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s-sidewhale-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-upstream-k8s-reset integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean integration-test-kafka-log-stream-k8s integration-test-kafka-log-stream-k8s-clean integration-test-kafka-upstream-shape-k8s integration-test-kafka-upstream-shape-k8s-clean endurance-test clean
 
 help:
 	@echo "Targets:"
@@ -22,15 +22,18 @@ help:
 	@echo "  integration-test-upstream Run selected upstream non-turbo testcontainers-java tests"
 	@echo "  integration-test-upstream-mirrored Run upstream tests through local registry mirrors"
 	@echo "  integration-test-upstream-k8s-image Build upstream Gradle runner image"
+	@echo "  integration-test-upstream-k8s-sidewhale-image Build and import Sidewhale image into k3d"
 	@echo "  integration-test-upstream-k8s Run upstream tests in a Kubernetes Job"
 	@echo "  integration-test-upstream-k8s-logs Stream logs from the Kubernetes Job"
 	@echo "  integration-test-upstream-k8s-clean Delete the Kubernetes Job"
+	@echo "  integration-test-upstream-k8s-reset Reset k8s test baseline and redeploy sidewhale"
 	@echo "  integration-test-kafka-listener-k8s Run Kafka listener smoke test in-cluster against Sidewhale"
 	@echo "  integration-test-kafka-listener-k8s-clean Delete Kafka listener smoke test Job"
 	@echo "  integration-test-kafka-log-stream-k8s Run Kafka log-stream smoke test in-cluster against Sidewhale"
 	@echo "  integration-test-kafka-log-stream-k8s-clean Delete Kafka log-stream smoke test Job"
 	@echo "  integration-test-kafka-upstream-shape-k8s Run Kafka smoke test with Testcontainers upstream startup shape"
 	@echo "  integration-test-kafka-upstream-shape-k8s-clean Delete Kafka upstream-shape smoke test Job"
+	@echo "  endurance-test Run repeated upstream module tests on proot and k8s and write pass/fail report"
 	@echo "  clean   Remove build artifacts"
 	@echo "Variables:"
 	@echo "  VERSION    Override version tag (default: git describe or dev)"
@@ -49,6 +52,13 @@ help:
 	@echo "  K8S_UPSTREAM_TEST_ARGS Test args for in-cluster runner"
 	@echo "  K8S_UPSTREAM_PRECOMPILE_TASKS Gradle tasks precompiled in runner image"
 	@echo "  K8S_UPSTREAM_PREWARM_DEPS Resolve runner deps at image build for offline runs"
+	@echo "  ENDURANCE_BACKENDS Comma-separated backends (default: proot,k8s)"
+	@echo "  ENDURANCE_TASKS Comma-separated Gradle tasks (default: confirmed modules)"
+	@echo "  ENDURANCE_ITERATIONS Iterations per backend/task (default: 100)"
+	@echo "  ENDURANCE_REPORT Report path (default: /tmp/sidewhale-endurance-report.tsv)"
+	@echo "  ENDURANCE_K8S_RESET If true, reset k8s baseline before k8s endurance runs"
+	@echo "  ENDURANCE_K8S_RESET_MODE k8s reset mode: namespace or cluster (default: namespace)"
+	@echo "  K8S_SIDEWHALE_IMAGE Sidewhale image for k8s runtime (default: sidewhale:dev)"
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -103,6 +113,15 @@ K8S_KAFKA_LOG_IT_JOB_NAME ?= sidewhale-kafka-log-it
 K8S_KAFKA_LOG_IT_TIMEOUT ?= 600s
 K8S_KAFKA_UPSTREAM_IT_JOB_NAME ?= sidewhale-kafka-upstream-shape-it
 K8S_KAFKA_UPSTREAM_IT_TIMEOUT ?= 900s
+K8S_SIDEWHALE_IMAGE ?= sidewhale:dev
+K8S_RESET_MODE ?= namespace
+ENDURANCE_BACKENDS ?= proot,k8s
+ENDURANCE_TASKS ?= :testcontainers-postgresql:test,:testcontainers-ldap:test,:testcontainers-mockserver:test
+ENDURANCE_ITERATIONS ?= 100
+ENDURANCE_REPORT ?= /tmp/sidewhale-endurance-report.tsv
+ENDURANCE_K8S_RESET ?= false
+ENDURANCE_K8S_RESET_MODE ?= namespace
+ENDURANCE_K8S_BUILD_IMAGE ?= true
 
 smoke-pull:
 	@set -euo pipefail; \
@@ -212,6 +231,10 @@ integration-test-upstream-k8s-image:
 		-f it/upstream-runner/Dockerfile it/upstream-runner
 	k3d image import $(K8S_UPSTREAM_RUNNER_IMAGE):$(K8S_UPSTREAM_RUNNER_TAG) -c $(K8S_CLUSTER_NAME)
 
+integration-test-upstream-k8s-sidewhale-image:
+	docker build -t $(K8S_SIDEWHALE_IMAGE) .
+	k3d image import $(K8S_SIDEWHALE_IMAGE) -c $(K8S_CLUSTER_NAME)
+
 integration-test-upstream-k8s:
 	@set -euo pipefail; \
 	$(MAKE) integration-test-upstream-k8s-image; \
@@ -243,6 +266,19 @@ integration-test-upstream-k8s-logs:
 
 integration-test-upstream-k8s-clean:
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_UPSTREAM_JOB_NAME) --ignore-not-found
+
+integration-test-upstream-k8s-reset:
+	@set -euo pipefail; \
+	if [ "$(K8S_RESET_MODE)" = "cluster" ]; then \
+		k3d cluster delete $(K8S_CLUSTER_NAME) >/dev/null 2>&1 || true; \
+		k3d cluster create $(K8S_CLUSTER_NAME) --servers 1 --agents 1; \
+	fi; \
+	$(MAKE) integration-test-upstream-k8s-sidewhale-image K8S_SIDEWHALE_IMAGE="$(K8S_SIDEWHALE_IMAGE)" K8S_CLUSTER_NAME="$(K8S_CLUSTER_NAME)"; \
+	kubectl --context $(K8S_CONTEXT) delete namespace $(K8S_NAMESPACE) --ignore-not-found >/dev/null 2>&1 || true; \
+	kubectl --context $(K8S_CONTEXT) create namespace $(K8S_NAMESPACE) >/dev/null; \
+	kubectl --context $(K8S_CONTEXT) apply -f deploy/sidewhale-k8s-runtime.yaml >/dev/null; \
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) set image deployment/sidewhale sidewhale=$(K8S_SIDEWHALE_IMAGE) >/dev/null; \
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) rollout status deployment/sidewhale --timeout=180s
 
 integration-test-kafka-listener-k8s:
 	K8S_CONTEXT="$(K8S_CONTEXT)" \
@@ -276,6 +312,20 @@ integration-test-kafka-upstream-shape-k8s:
 
 integration-test-kafka-upstream-shape-k8s-clean:
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_KAFKA_UPSTREAM_IT_JOB_NAME) --ignore-not-found
+
+endurance-test:
+	ENDURANCE_BACKENDS="$(ENDURANCE_BACKENDS)" \
+	ENDURANCE_TASKS="$(ENDURANCE_TASKS)" \
+	ENDURANCE_ITERATIONS="$(ENDURANCE_ITERATIONS)" \
+	ENDURANCE_REPORT="$(ENDURANCE_REPORT)" \
+	ENDURANCE_K8S_RESET="$(ENDURANCE_K8S_RESET)" \
+	ENDURANCE_K8S_RESET_MODE="$(ENDURANCE_K8S_RESET_MODE)" \
+	ENDURANCE_K8S_BUILD_IMAGE="$(ENDURANCE_K8S_BUILD_IMAGE)" \
+	K8S_CONTEXT="$(K8S_CONTEXT)" \
+	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
+	K8S_CLUSTER_NAME="$(K8S_CLUSTER_NAME)" \
+	K8S_SIDEWHALE_IMAGE="$(K8S_SIDEWHALE_IMAGE)" \
+	./it/endurance/run.sh
 
 clean:
 	rm -f $(BINARY)

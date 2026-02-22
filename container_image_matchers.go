@@ -67,6 +67,14 @@ func isCassandraImage(image string) bool {
 		image == "cassandra"
 }
 
+func isPostgresFamilyImage(image string) bool {
+	image = strings.ToLower(normalizeImageToken(image))
+	return strings.Contains(image, "postgres") ||
+		strings.Contains(image, "postgis") ||
+		strings.Contains(image, "timescaledb") ||
+		strings.Contains(image, "pgvector")
+}
+
 func dockerHostForInnerClients(unixSocketPath, requestHost string) string {
 	if strings.TrimSpace(unixSocketPath) != "" {
 		return "unix://" + unixSocketPath

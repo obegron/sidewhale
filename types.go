@@ -34,6 +34,7 @@ type Container struct {
 	LoopbackIP    string              `json:"LoopbackIP,omitempty"`
 	NetworkMode   string              `json:"NetworkMode,omitempty"`
 	ExtraHosts    []string            `json:"ExtraHosts,omitempty"`
+	Tmpfs         map[string]string   `json:"Tmpfs,omitempty"`
 	K8sNamespace  string              `json:"K8sNamespace,omitempty"`
 	K8sPodName    string              `json:"K8sPodName,omitempty"`
 	K8sPodIP      string              `json:"K8sPodIP,omitempty"`
@@ -110,6 +111,7 @@ type hostConfig struct {
 	PortBindings map[string][]portBinding `json:"PortBindings"`
 	ExtraHosts   []string                 `json:"ExtraHosts"`
 	Binds        []string                 `json:"Binds"`
+	Tmpfs        map[string]string        `json:"Tmpfs"`
 }
 
 type portBinding struct {

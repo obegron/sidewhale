@@ -164,25 +164,12 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		}
 	}
 	if isCassandra {
-		// Give archive replay a deterministic window before Cassandra reads config.
+		// Gate startup until Sidewhale finishes archive replay; this avoids races
+		// with the image entrypoint editing cassandra.yaml while we're still copying it.
 		if len(entrypoint) > 0 {
 			bootCmd := append(append([]string{}, entrypoint...), args...)
-			entrypoint = []string{"sh", "-lc", "sleep 5; exec " + shellJoin(bootCmd)}
+			entrypoint = []string{"sh", "-lc", "while [ ! -f /tmp/.sidewhale-ready ]; do sleep 0.2; done; exec " + shellJoin(bootCmd)}
 			args = nil
-		}
-		probePort := 9042
-		if _, ok := c.Ports[probePort]; !ok {
-			if _, ok := c.Ports[9142]; ok {
-				probePort = 9142
-			}
-		}
-		containerSpec["startupProbe"] = map[string]interface{}{
-			"tcpSocket": map[string]interface{}{
-				"port": probePort,
-			},
-			"initialDelaySeconds": 5,
-			"periodSeconds":       2,
-			"failureThreshold":    150,
 		}
 	}
 	containerSpec["env"] = env
@@ -210,6 +197,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			},
 		},
 	}
+	appendTmpfsVolumes(c, containerSpec, podSpec)
 	appendWritableArchiveVolumes(c, containerSpec, podSpec)
 	if isOracle {
 		podSpec["securityContext"] = map[string]interface{}{
@@ -497,7 +485,7 @@ func (k *k8sClient) execPodWithInput(ctx context.Context, namespace, name string
 	if stdin != nil {
 		go func() {
 			defer close(stdinDone)
-			buf := make([]byte, 32*1024)
+			buf := make([]byte, 4*1024)
 			for {
 				n, err := stdin.Read(buf)
 				if n > 0 {
@@ -723,6 +711,106 @@ func appendWritableArchiveVolumes(c *Container, containerSpec map[string]interfa
 	}
 	containerSpec["volumeMounts"] = volumeMounts
 	podSpec["volumes"] = volumes
+}
+
+func appendTmpfsVolumes(c *Container, containerSpec map[string]interface{}, podSpec map[string]interface{}) {
+	if c == nil || len(c.Tmpfs) == 0 {
+		return
+	}
+
+	volumeMounts, _ := containerSpec["volumeMounts"].([]map[string]interface{})
+	volumes, _ := podSpec["volumes"].([]map[string]interface{})
+	seen := map[string]struct{}{}
+
+	for mountPathRaw, opts := range c.Tmpfs {
+		mountPath := path.Clean("/" + strings.TrimSpace(mountPathRaw))
+		if mountPath == "/" || mountPath == "." || mountPath == "" {
+			continue
+		}
+		if _, exists := seen[mountPath]; exists {
+			continue
+		}
+		seen[mountPath] = struct{}{}
+
+		name := "tmpfs-" + strings.TrimPrefix(strings.ReplaceAll(mountPath, "/", "-"), "-")
+		emptyDir := map[string]interface{}{
+			"medium": "Memory",
+		}
+		if limit, ok := tmpfsSizeLimit(opts); ok {
+			emptyDir["sizeLimit"] = limit
+		}
+		volumes = append(volumes, map[string]interface{}{
+			"name":     name,
+			"emptyDir": emptyDir,
+		})
+
+		vm := map[string]interface{}{
+			"name":      name,
+			"mountPath": mountPath,
+		}
+		if tmpfsReadOnly(opts) {
+			vm["readOnly"] = true
+		}
+		volumeMounts = append(volumeMounts, vm)
+	}
+
+	containerSpec["volumeMounts"] = volumeMounts
+	podSpec["volumes"] = volumes
+}
+
+func tmpfsReadOnly(opts string) bool {
+	for _, token := range strings.Split(strings.ToLower(strings.TrimSpace(opts)), ",") {
+		if strings.TrimSpace(token) == "ro" {
+			return true
+		}
+	}
+	return false
+}
+
+func tmpfsSizeLimit(opts string) (string, bool) {
+	for _, token := range strings.Split(strings.TrimSpace(opts), ",") {
+		token = strings.TrimSpace(token)
+		if !strings.HasPrefix(strings.ToLower(token), "size=") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.SplitN(token, "=", 2)[1])
+		if raw == "" {
+			return "", false
+		}
+		return normalizeTmpfsSize(raw), true
+	}
+	return "", false
+}
+
+func normalizeTmpfsSize(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.HasSuffix(lower, "ki"),
+		strings.HasSuffix(lower, "mi"),
+		strings.HasSuffix(lower, "gi"),
+		strings.HasSuffix(lower, "ti"),
+		strings.HasSuffix(lower, "pi"),
+		strings.HasSuffix(lower, "ei"):
+		return raw[:len(raw)-2] + strings.ToUpper(raw[len(raw)-2:])
+	case strings.HasSuffix(lower, "k"):
+		return raw[:len(raw)-1] + "Ki"
+	case strings.HasSuffix(lower, "m"):
+		return raw[:len(raw)-1] + "Mi"
+	case strings.HasSuffix(lower, "g"):
+		return raw[:len(raw)-1] + "Gi"
+	case strings.HasSuffix(lower, "t"):
+		return raw[:len(raw)-1] + "Ti"
+	case strings.HasSuffix(lower, "p"):
+		return raw[:len(raw)-1] + "Pi"
+	case strings.HasSuffix(lower, "e"):
+		return raw[:len(raw)-1] + "Ei"
+	default:
+		return raw
+	}
 }
 
 func archiveWritableMountPath(containerPath string) (string, bool) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +117,81 @@ func TestCreatePodEntrypointAndArgsMappedSeparately(t *testing.T) {
 	}
 	if emptyDir["medium"] != "Memory" || emptyDir["sizeLimit"] != "1Gi" {
 		t.Fatalf("emptyDir = %#v, want medium=Memory sizeLimit=1Gi", emptyDir)
+	}
+}
+
+func TestCreatePodTmpfsMappedToMemoryVolumes(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := &k8sClient{
+		baseURL:   srv.URL,
+		token:     "x",
+		namespace: "ns",
+		http:      srv.Client(),
+	}
+	c := &Container{
+		ID:            "tmpfs1",
+		Image:         "postgres:16",
+		ResolvedImage: "postgres:16",
+		Tmpfs: map[string]string{
+			"/testtmpfs": "rw,noexec,nosuid,size=65536k",
+			"/readonly":  "ro,size=32m",
+		},
+	}
+	if _, err := client.createPod(context.Background(), c, nil); err != nil {
+		t.Fatalf("createPod failed: %v", err)
+	}
+
+	spec := got["spec"].(map[string]interface{})
+	containers := spec["containers"].([]interface{})
+	container := containers[0].(map[string]interface{})
+	volumeMounts := container["volumeMounts"].([]interface{})
+
+	foundTestTmpfs := false
+	foundReadOnly := false
+	for _, item := range volumeMounts {
+		vm := item.(map[string]interface{})
+		switch vm["mountPath"] {
+		case "/testtmpfs":
+			foundTestTmpfs = true
+		case "/readonly":
+			foundReadOnly = true
+			if vm["readOnly"] != true {
+				t.Fatalf("readonly tmpfs mount missing readOnly=true: %#v", vm)
+			}
+		}
+	}
+	if !foundTestTmpfs {
+		t.Fatalf("missing /testtmpfs mount in volumeMounts: %#v", volumeMounts)
+	}
+	if !foundReadOnly {
+		t.Fatalf("missing /readonly mount in volumeMounts: %#v", volumeMounts)
+	}
+
+	volumes := spec["volumes"].([]interface{})
+	foundSized := false
+	for _, item := range volumes {
+		vol := item.(map[string]interface{})
+		if !strings.HasPrefix(vol["name"].(string), "tmpfs-") {
+			continue
+		}
+		emptyDir := vol["emptyDir"].(map[string]interface{})
+		if emptyDir["medium"] != "Memory" {
+			t.Fatalf("tmpfs emptyDir medium=%#v, want Memory", emptyDir["medium"])
+		}
+		if emptyDir["sizeLimit"] == "65536Ki" || emptyDir["sizeLimit"] == "32Mi" {
+			foundSized = true
+		}
+	}
+	if !foundSized {
+		t.Fatalf("tmpfs volumes missing converted sizeLimit values: %#v", volumes)
 	}
 }

@@ -178,6 +178,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		Args:          append([]string{}, cmd...),
 		NetworkMode:   "bridge",
 		ExtraHosts:    normalizeExtraHosts(req.HostConfig.ExtraHosts),
+		Tmpfs:         copyStringMap(req.HostConfig.Tmpfs),
 	}
 
 	requestedMode := strings.TrimSpace(req.HostConfig.NetworkMode)
@@ -371,6 +372,76 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 			m.mu.Unlock()
 			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
 			return
+		}
+		if isCassandraImage(c.ResolvedImage) || isCassandraImage(c.Image) {
+			out, errOut, code, err := client.execPod(
+				r.Context(),
+				c.K8sNamespace,
+				c.K8sPodName,
+				[]string{"sh", "-lc", "grep -n '^thrift_prepared_statements_cache' /etc/cassandra/cassandra.yaml || true"},
+			)
+			if err == nil {
+				fmt.Printf(
+					"sidewhale: cassandra prestart thrift-cache-line container=%s stdout=%q stderr=%q exit=%d\n",
+					c.ID,
+					trimLogOutput(out, 256),
+					trimLogOutput(errOut, 256),
+					code,
+				)
+			}
+			_, errOut, code, err = client.execPod(
+				r.Context(),
+				c.K8sNamespace,
+				c.K8sPodName,
+				[]string{"sh", "-lc", "grep -q '^commitlog_sync:' /etc/cassandra/cassandra.yaml"},
+			)
+			if err != nil || code != 0 {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				m.mu.Lock()
+				m.startFailures++
+				m.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "start failed: cassandra config validation failed: "+strings.TrimSpace(string(errOut)))
+				return
+			}
+			_, errOut, code, err = client.execPod(r.Context(), c.K8sNamespace, c.K8sPodName, []string{"sh", "-lc", "touch /tmp/.sidewhale-ready"})
+			if err != nil || code != 0 {
+				if reserved {
+					m.mu.Lock()
+					if m.running > 0 {
+						m.running--
+					}
+					m.mu.Unlock()
+				}
+				m.mu.Lock()
+				m.startFailures++
+				m.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "start failed: cassandra release gate failed: "+strings.TrimSpace(string(errOut)))
+				return
+			}
+		}
+		if isPostgresFamilyImage(c.ResolvedImage) || isPostgresFamilyImage(c.Image) {
+			if _, ok := c.Ports[5432]; ok {
+				if err := waitForPostgresReady(r.Context(), client, c.K8sNamespace, c.K8sPodName, 2*time.Minute); err != nil {
+					if reserved {
+						m.mu.Lock()
+						if m.running > 0 {
+							m.running--
+						}
+						m.mu.Unlock()
+					}
+					m.mu.Lock()
+					m.startFailures++
+					m.mu.Unlock()
+					writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+					return
+				}
+			}
 		}
 		targets := map[int]string{}
 		if podState.Running {
@@ -726,6 +797,53 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	go monitorContainer(c.ID, c.Pid, c.LogPath, store, limits)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func waitForPostgresReady(ctx context.Context, client *k8sClient, namespace, podName string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr string
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		_, stderr, code, err := client.execPod(
+			ctx,
+			namespace,
+			podName,
+			[]string{"sh", "-lc", "command -v pg_isready >/dev/null 2>&1 && pg_isready -q -h 127.0.0.1 -p 5432"},
+		)
+		if err == nil && code == 0 {
+			return nil
+		}
+		if strings.TrimSpace(string(stderr)) != "" {
+			lastErr = strings.TrimSpace(string(stderr))
+		} else if err != nil {
+			lastErr = err.Error()
+		} else {
+			lastErr = fmt.Sprintf("exit=%d", code)
+		}
+		if time.Now().After(deadline) {
+			if lastErr == "" {
+				lastErr = "timeout waiting for pg_isready"
+			}
+			return fmt.Errorf("postgres readiness check failed: %s", lastErr)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func tryReplayStoppedK8sContainerLocally(c *Container) {

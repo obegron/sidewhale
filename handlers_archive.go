@@ -691,36 +691,30 @@ func patchCassandraConfigForK8s(c *Container, containerPath, localPath string) e
 		return nil
 	}
 	podIP := strings.TrimSpace(c.K8sPodIP)
-	broadcastIP := podIP
-	if broadcastIP == "" {
-		broadcastIP = "127.0.0.1"
-	}
 	raw, err := os.ReadFile(localPath)
 	if err != nil {
 		return err
 	}
-	orig := string(raw)
-	updated := orig
-	rewrite := func(key, value string) {
-		re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(key) + `\s*:\s*).*$`)
-		updated = re.ReplaceAllString(updated, "${1}"+value)
-	}
-	rewrite("listen_address", broadcastIP)
-	rewrite("broadcast_address", broadcastIP)
-	rewrite("rpc_address", "0.0.0.0")
-	rewrite("broadcast_rpc_address", broadcastIP)
-	seedRe := regexp.MustCompile(`(?m)^(\s*-\s*seeds\s*:\s*).*$`)
-	updated = seedRe.ReplaceAllString(updated, `${1}"`+broadcastIP+`"`)
-	updated = strings.ReplaceAll(updated, "172.17.0.2", broadcastIP)
-	if updated == orig {
-		fmt.Printf("sidewhale: cassandra compat patch nochange path=%s pod_ip=%s broadcast_ip=%s image=%q resolved=%q\n", containerPath, podIP, broadcastIP, c.Image, c.ResolvedImage)
-		return nil
-	}
-	if err := os.WriteFile(localPath, []byte(updated), 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("sidewhale: cassandra compat patched config path=%s pod_ip=%s broadcast_ip=%s\n", containerPath, podIP, broadcastIP)
+	fmt.Printf(
+		"sidewhale: cassandra compat precheck path=%s pod_ip=%s commitlog=%q native=%q rpc=%q\n",
+		containerPath,
+		podIP,
+		findYAMLLine(string(raw), "commitlog_sync"),
+		findYAMLLine(string(raw), "start_native_transport"),
+		findYAMLLine(string(raw), "start_rpc"),
+	)
+	// Do not mutate cassandra.yaml directly; let the image entrypoint update
+	// listen/broadcast settings from CASSANDRA_* env vars to avoid file races.
 	return nil
+}
+
+func findYAMLLine(src, key string) string {
+	re := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `\s*:.*$`)
+	line := strings.TrimSpace(re.FindString(src))
+	if line == "" {
+		return "<missing>"
+	}
+	return line
 }
 
 func patchKafkaStartScriptForK8s(c *Container, containerPath, localPath string) error {
