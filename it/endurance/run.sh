@@ -2,20 +2,21 @@
 set -euo pipefail
 
 BACKENDS_RAW="${ENDURANCE_BACKENDS:-proot,k8s}"
-TASKS_RAW="${ENDURANCE_TASKS:-:testcontainers-postgresql:test,:testcontainers-ldap:test,:testcontainers-mockserver:test}"
+TASKS_RAW="${ENDURANCE_TASKS:-:testcontainers-postgresql:test,:testcontainers-ldap:test,testcontainers-kafka:test,:testcontainers-mockserver:test,testcontainers-mssql:test}"
 ITERATIONS="${ENDURANCE_ITERATIONS:-100}"
 REPORT_PATH="${ENDURANCE_REPORT:-/tmp/sidewhale-endurance-report.tsv}"
 K8S_RESET="${ENDURANCE_K8S_RESET:-false}"
 K8S_RESET_MODE="${ENDURANCE_K8S_RESET_MODE:-namespace}"
 K8S_BUILD_IMAGE="${ENDURANCE_K8S_BUILD_IMAGE:-true}"
+K8S_PREPULL_IMAGES_RAW="${ENDURANCE_K8S_PREPULL_IMAGES:-}"
 
 if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [ "$ITERATIONS" -le 0 ]; then
   echo "ENDURANCE_ITERATIONS must be a positive integer (got: $ITERATIONS)" >&2
   exit 1
 fi
 
-IFS=',' read -r -a BACKENDS <<< "$BACKENDS_RAW"
-IFS=',' read -r -a TASKS <<< "$TASKS_RAW"
+IFS=',' read -r -a BACKENDS <<<"$BACKENDS_RAW"
+IFS=',' read -r -a TASKS <<<"$TASKS_RAW"
 
 if [ "${#BACKENDS[@]}" -eq 0 ] || [ "${#TASKS[@]}" -eq 0 ]; then
   echo "ENDURANCE_BACKENDS and ENDURANCE_TASKS must be non-empty" >&2
@@ -32,7 +33,7 @@ mkdir -p "$report_dir"
   echo "# tasks	$TASKS_RAW"
   echo "# iterations	$ITERATIONS"
   echo "timestamp_utc	backend	task	iteration	status	duration_s"
-} > "$REPORT_PATH"
+} >"$REPORT_PATH"
 
 tmp_log="$(mktemp -t sidewhale-endurance.XXXXXX.log)"
 trap 'rm -f "$tmp_log"' EXIT
@@ -61,8 +62,27 @@ run_one() {
   return 2
 }
 
+prewarm_k8s_images() {
+  local images_raw="$1"
+  local cluster_name="$2"
+  [ -n "$images_raw" ] || return 0
+
+  IFS=',' read -r -a images <<<"$images_raw"
+  for image in "${images[@]}"; do
+    image="$(echo "$image" | xargs)"
+    [ -n "$image" ] || continue
+
+    echo "Prewarming k8s image: $image"
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      docker pull "$image"
+    fi
+    k3d image import "$image" -c "$cluster_name"
+  done
+}
+
 k8s_reset_done=false
 k8s_image_prepared=false
+k8s_images_prewarmed=false
 for backend in "${BACKENDS[@]}"; do
   backend="$(echo "$backend" | xargs)"
   [ -n "$backend" ] || continue
@@ -90,6 +110,11 @@ for backend in "${BACKENDS[@]}"; do
     k8s_reset_done=true
   fi
 
+  if [ "$backend" = "k8s" ] && [ "$k8s_images_prewarmed" = "false" ]; then
+    prewarm_k8s_images "$K8S_PREPULL_IMAGES_RAW" "${K8S_CLUSTER_NAME:-sidewhale-k8s}"
+    k8s_images_prewarmed=true
+  fi
+
   for task in "${TASKS[@]}"; do
     task="$(echo "$task" | xargs)"
     [ -n "$task" ] || continue
@@ -113,7 +138,7 @@ for backend in "${BACKENDS[@]}"; do
       fi
 
       printf "%s\t%s\t%s\t%d\t%s\t%d\n" \
-        "$started_utc" "$backend" "$task" "$i" "$status" "$duration_s" >> "$REPORT_PATH"
+        "$started_utc" "$backend" "$task" "$i" "$status" "$duration_s" >>"$REPORT_PATH"
 
       echo "[$started_utc] backend=$backend task=$task iteration=$i status=$status duration_s=$duration_s"
 

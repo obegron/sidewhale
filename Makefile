@@ -58,6 +58,7 @@ help:
 	@echo "  ENDURANCE_REPORT Report path (default: /tmp/sidewhale-endurance-report.tsv)"
 	@echo "  ENDURANCE_K8S_RESET If true, reset k8s baseline before k8s endurance runs"
 	@echo "  ENDURANCE_K8S_RESET_MODE k8s reset mode: namespace or cluster (default: namespace)"
+	@echo "  ENDURANCE_K8S_PREPULL_IMAGES Comma-separated images to pull/import into k3d before k8s endurance runs"
 	@echo "  K8S_SIDEWHALE_IMAGE Sidewhale image for k8s runtime (default: sidewhale:dev)"
 
 build:
@@ -122,6 +123,7 @@ ENDURANCE_REPORT ?= /tmp/sidewhale-endurance-report.tsv
 ENDURANCE_K8S_RESET ?= false
 ENDURANCE_K8S_RESET_MODE ?= namespace
 ENDURANCE_K8S_BUILD_IMAGE ?= true
+ENDURANCE_K8S_PREPULL_IMAGES ?=
 
 smoke-pull:
 	@set -euo pipefail; \
@@ -321,6 +323,7 @@ endurance-test:
 	ENDURANCE_K8S_RESET="$(ENDURANCE_K8S_RESET)" \
 	ENDURANCE_K8S_RESET_MODE="$(ENDURANCE_K8S_RESET_MODE)" \
 	ENDURANCE_K8S_BUILD_IMAGE="$(ENDURANCE_K8S_BUILD_IMAGE)" \
+	ENDURANCE_K8S_PREPULL_IMAGES="$(ENDURANCE_K8S_PREPULL_IMAGES)" \
 	K8S_CONTEXT="$(K8S_CONTEXT)" \
 	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
 	K8S_CLUSTER_NAME="$(K8S_CLUSTER_NAME)" \
