@@ -37,12 +37,20 @@ func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, uni
 	}
 	if isKafkaImage(resolvedImage) || isKafkaImage(requestedImage) {
 		env = rewriteKafkaListenersForK8s(env)
+		// Kafka images can trigger JVM cgroupv2 null dereferences under proot.
+		// Older Java 8-based Confluent images do not recognize this option.
+		if supportsUseContainerSupportFlag(resolvedImage, requestedImage) {
+			env = ensureEnvContainsToken(env, "JVMFLAGS", "-XX:-UseContainerSupport")
+			env = ensureEnvContainsToken(env, "JAVA_TOOL_OPTIONS", "-XX:-UseContainerSupport")
+		}
 	}
 	if isZookeeperImage(resolvedImage) || isZookeeperImage(requestedImage) {
 		// Under proot, JVM container metrics may panic in cgroupv2 detection.
 		// Disable container support for zookeeper-family images by default.
-		env = ensureEnvContainsToken(env, "JVMFLAGS", "-XX:-UseContainerSupport")
-		env = ensureEnvContainsToken(env, "JAVA_TOOL_OPTIONS", "-XX:-UseContainerSupport")
+		if supportsUseContainerSupportFlag(resolvedImage, requestedImage) {
+			env = ensureEnvContainsToken(env, "JVMFLAGS", "-XX:-UseContainerSupport")
+			env = ensureEnvContainsToken(env, "JAVA_TOOL_OPTIONS", "-XX:-UseContainerSupport")
+		}
 		// Default zookeeper startup enables JMX, which triggers JVM platform
 		// metrics initialization and can crash on constrained cgroup layouts.
 		// Disable JMX unless the caller explicitly sets it.
@@ -54,6 +62,71 @@ func applyImageCompat(env []string, hostname, resolvedImage, requestedImage, uni
 		env = mergeEnv(env, []string{"DOCKER_HOST=" + dockerHostForInnerClients(unixSocketPath, requestHost)})
 	}
 	return env
+}
+
+func supportsUseContainerSupportFlag(resolvedImage, requestedImage string) bool {
+	candidates := []string{
+		strings.TrimSpace(resolvedImage),
+		strings.TrimSpace(requestedImage),
+	}
+	for _, image := range candidates {
+		if image == "" {
+			continue
+		}
+		if isLegacyJava8ConfluentImage(image) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLegacyJava8ConfluentImage(image string) bool {
+	image = strings.ToLower(strings.TrimSpace(image))
+	if image == "" {
+		return false
+	}
+	isConfluent := strings.Contains(image, "confluentinc/cp-zookeeper") || strings.Contains(image, "confluentinc/cp-kafka")
+	if !isConfluent {
+		return false
+	}
+	major, ok := parseImageTagMajor(image)
+	if !ok {
+		return false
+	}
+	return major < 5
+}
+
+func parseImageTagMajor(image string) (int, bool) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return 0, false
+	}
+	withoutDigest := image
+	if idx := strings.Index(withoutDigest, "@"); idx >= 0 {
+		withoutDigest = withoutDigest[:idx]
+	}
+	lastColon := strings.LastIndex(withoutDigest, ":")
+	lastSlash := strings.LastIndex(withoutDigest, "/")
+	if lastColon <= lastSlash || lastColon < 0 || lastColon+1 >= len(withoutDigest) {
+		return 0, false
+	}
+	tag := withoutDigest[lastColon+1:]
+	var majorDigits strings.Builder
+	for _, r := range tag {
+		if r >= '0' && r <= '9' {
+			majorDigits.WriteRune(r)
+			continue
+		}
+		break
+	}
+	if majorDigits.Len() == 0 {
+		return 0, false
+	}
+	major, err := strconv.Atoi(majorDigits.String())
+	if err != nil {
+		return 0, false
+	}
+	return major, true
 }
 
 func rewriteKafkaListenersForK8s(env []string) []string {

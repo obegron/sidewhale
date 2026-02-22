@@ -48,6 +48,12 @@ func refreshNetworkAliasHosts(store *containerStore, containerID string) {
 		if !ok || c == nil || !c.Running {
 			continue
 		}
-		_ = writeContainerIdentityFilesWithAliasesAndHosts(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID), c.ExtraHosts)
+		hostAliasMap := store.peerHostAliasesForContainer(c.ID)
+		for host, ip := range store.selfHostAliasesForContainer(c.ID) {
+			if _, exists := hostAliasMap[host]; !exists {
+				hostAliasMap[host] = ip
+			}
+		}
+		_ = writeContainerIdentityFilesWithHostAliasesAndHosts(c.Rootfs, c.Hostname, hostAliasMap, c.ExtraHosts)
 	}
 }

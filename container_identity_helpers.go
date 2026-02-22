@@ -41,6 +41,18 @@ func writeContainerIdentityFilesWithAliases(rootfs, hostname string, aliases []s
 }
 
 func writeContainerIdentityFilesWithAliasesAndHosts(rootfs, hostname string, aliases, extraHosts []string) error {
+	hostAliasMap := map[string]string{}
+	for _, alias := range aliases {
+		alias = normalizeContainerHostname(alias)
+		if alias == "" {
+			continue
+		}
+		hostAliasMap[alias] = "127.0.0.1"
+	}
+	return writeContainerIdentityFilesWithHostAliasesAndHosts(rootfs, hostname, hostAliasMap, extraHosts)
+}
+
+func writeContainerIdentityFilesWithHostAliasesAndHosts(rootfs, hostname string, hostAliases map[string]string, extraHosts []string) error {
 	hostname = normalizeContainerHostname(hostname)
 	if hostname == "" {
 		return nil
@@ -65,26 +77,27 @@ func writeContainerIdentityFilesWithAliasesAndHosts(rootfs, hostname string, ali
 		}
 	}
 
-	uniq := map[string]struct{}{}
-	for _, alias := range aliases {
+	aliasesByIP := map[string][]string{}
+	for alias, ip := range hostAliases {
 		alias = normalizeContainerHostname(alias)
-		if alias == "" || alias == hostname {
+		ip = strings.TrimSpace(ip)
+		if alias == "" || alias == hostname || ip == "" {
 			continue
 		}
-		if _, ok := uniq[alias]; ok {
-			continue
-		}
-		uniq[alias] = struct{}{}
+		aliasesByIP[ip] = append(aliasesByIP[ip], alias)
 	}
-	if len(uniq) > 0 {
-		names := make([]string, 0, len(uniq))
-		for alias := range uniq {
-			names = append(names, alias)
+	if len(aliasesByIP) > 0 {
+		ips := make([]string, 0, len(aliasesByIP))
+		for ip := range aliasesByIP {
+			ips = append(ips, ip)
 		}
-		sort.Strings(names)
-		for _, alias := range names {
-			// Sidewhale runs in a shared host network namespace, so aliases route via loopback.
-			content.WriteString("127.0.0.1\t" + alias + "\n")
+		sort.Strings(ips)
+		for _, ip := range ips {
+			names := aliasesByIP[ip]
+			sort.Strings(names)
+			for _, alias := range names {
+				content.WriteString(ip + "\t" + alias + "\n")
+			}
 		}
 	}
 	for _, raw := range extraHosts {

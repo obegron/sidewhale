@@ -322,7 +322,13 @@ func (s *containerStore) peerHostAliasesForContainer(containerID string) map[str
 			}
 			ip := strings.TrimSpace(peer.K8sPodIP)
 			if ip == "" {
-				ip = strings.TrimSpace(peer.LoopbackIP)
+				if isZookeeperImage(peer.Image) || isZookeeperImage(peer.ResolvedImage) {
+					// Zookeeper images in proot bind loopback-local by default.
+					// Keep aliases on 127.0.0.1 for peer connectivity.
+					ip = "127.0.0.1"
+				} else {
+					ip = strings.TrimSpace(peer.LoopbackIP)
+				}
 			}
 			if ip == "" {
 				continue
@@ -351,6 +357,14 @@ func (s *containerStore) selfHostAliasesForContainer(containerID string) map[str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	selfIP := "127.0.0.1"
+	if c := s.containers[containerID]; c != nil {
+		if ip := strings.TrimSpace(c.K8sPodIP); ip != "" {
+			selfIP = ip
+		} else if ip := strings.TrimSpace(c.LoopbackIP); ip != "" {
+			selfIP = ip
+		}
+	}
 	out := map[string]string{}
 	for _, n := range s.networks {
 		ep, attached := n.Containers[containerID]
@@ -362,11 +376,11 @@ func (s *containerStore) selfHostAliasesForContainer(containerID string) map[str
 			if alias == "" {
 				continue
 			}
-			out[alias] = "127.0.0.1"
+			out[alias] = selfIP
 		}
 		name := normalizeContainerHostname(ep.Name)
 		if name != "" {
-			out[name] = "127.0.0.1"
+			out[name] = selfIP
 		}
 	}
 	return out

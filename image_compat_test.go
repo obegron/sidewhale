@@ -60,6 +60,27 @@ func TestApplyImageCompatKafkaListenersRewrittenForBind(t *testing.T) {
 	}
 }
 
+func TestApplyImageCompatAddsKafkaJavaFlags(t *testing.T) {
+	env := applyImageCompat(nil, "kafka", "confluentinc/cp-kafka:7.2.2", "confluentinc/cp-kafka:7.2.2", "", "")
+	jvmFlags := ""
+	javaToolOptions := ""
+	for _, e := range env {
+		k, v := splitEnv(e)
+		if k == "JVMFLAGS" {
+			jvmFlags = v
+		}
+		if k == "JAVA_TOOL_OPTIONS" {
+			javaToolOptions = v
+		}
+	}
+	if jvmFlags != "-XX:-UseContainerSupport" {
+		t.Fatalf("expected JVMFLAGS token, got %q", jvmFlags)
+	}
+	if javaToolOptions != "-XX:-UseContainerSupport" {
+		t.Fatalf("expected JAVA_TOOL_OPTIONS token, got %q", javaToolOptions)
+	}
+}
+
 func TestApplyImageCompatAddsZookeeperJavaFlags(t *testing.T) {
 	env := applyImageCompat(nil, "zk", "library/zookeeper:3.8.0", "library/zookeeper:3.8.0", "", "")
 	jvmFlags := ""
@@ -121,5 +142,39 @@ func TestApplyImageCompatZookeeperTokenDedup(t *testing.T) {
 	}
 	if jmxDisable != "false" {
 		t.Fatalf("expected existing JMXDISABLE preserved, got %q", jmxDisable)
+	}
+}
+
+func TestApplyImageCompatSkipsUnsupportedUseContainerSupportForLegacyConfluent(t *testing.T) {
+	env := applyImageCompat(nil, "zk", "confluentinc/cp-zookeeper:4.0.0", "confluentinc/cp-zookeeper:4.0.0", "", "")
+	for _, e := range env {
+		k, _ := splitEnv(e)
+		if k == "JVMFLAGS" || k == "JAVA_TOOL_OPTIONS" {
+			t.Fatalf("did not expect %s for legacy image, env=%v", k, env)
+		}
+	}
+	if !envHasKey(env, "JMXDISABLE") {
+		t.Fatalf("expected JMXDISABLE for legacy zookeeper image")
+	}
+}
+
+func TestApplyImageCompatKeepsUseContainerSupportForModernConfluent(t *testing.T) {
+	env := applyImageCompat(nil, "zk", "confluentinc/cp-zookeeper:6.2.1", "confluentinc/cp-zookeeper:6.2.1", "", "")
+	jvmFlags := ""
+	javaToolOptions := ""
+	for _, e := range env {
+		k, v := splitEnv(e)
+		if k == "JVMFLAGS" {
+			jvmFlags = v
+		}
+		if k == "JAVA_TOOL_OPTIONS" {
+			javaToolOptions = v
+		}
+	}
+	if jvmFlags != "-XX:-UseContainerSupport" {
+		t.Fatalf("expected JVMFLAGS token, got %q", jvmFlags)
+	}
+	if javaToolOptions != "-XX:-UseContainerSupport" {
+		t.Fatalf("expected JAVA_TOOL_OPTIONS token, got %q", javaToolOptions)
 	}
 }

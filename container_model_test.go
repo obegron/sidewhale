@@ -113,6 +113,31 @@ func TestWriteContainerIdentityFiles(t *testing.T) {
 	}
 }
 
+func TestWriteContainerIdentityFilesWithHostAliasesAndHosts(t *testing.T) {
+	rootfs := t.TempDir()
+	hostAliases := map[string]string{
+		"zookeeper": "127.0.0.2",
+		"kafka":     "127.0.0.3",
+	}
+	if err := writeContainerIdentityFilesWithHostAliasesAndHosts(rootfs, "tc-host", hostAliases, []string{"example.test:1.2.3.4"}); err != nil {
+		t.Fatalf("writeContainerIdentityFilesWithHostAliasesAndHosts error: %v", err)
+	}
+	hostsData, err := os.ReadFile(filepath.Join(rootfs, "etc", "hosts"))
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	hosts := string(hostsData)
+	if !strings.Contains(hosts, "127.0.0.2\tzookeeper") {
+		t.Fatalf("hosts missing zookeeper mapping: %q", hosts)
+	}
+	if !strings.Contains(hosts, "127.0.0.3\tkafka") {
+		t.Fatalf("hosts missing kafka mapping: %q", hosts)
+	}
+	if !strings.Contains(hosts, "1.2.3.4\texample.test") {
+		t.Fatalf("hosts missing extra host mapping: %q", hosts)
+	}
+}
+
 func TestHandleJSONIncludesPausedState(t *testing.T) {
 	store := &containerStore{
 		containers: map[string]*Container{

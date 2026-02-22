@@ -555,49 +555,27 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		_, err := ensureContainerLoopbackIP(store, c)
 		return err
 	}
-	if isRedisImage(c.Image) {
-		if err := ensureLoopbackIP(); err != nil {
-			if reserved {
-				m.mu.Lock()
-				if m.running > 0 {
-					m.running--
-				}
-				m.mu.Unlock()
+	if err := ensureLoopbackIP(); err != nil {
+		if reserved {
+			m.mu.Lock()
+			if m.running > 0 {
+				m.running--
 			}
-			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
-			return
+			m.mu.Unlock()
 		}
+		writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
+		return
+	}
+	if isRedisImage(c.Image) {
 		cmdArgs = applyRedisRuntimeCompat(cmdArgs, c.LoopbackIP)
 		runtimeTargets[6379] = c.LoopbackIP + ":6379"
 	}
 	if isLLdapImage(c.Image) {
-		if err := ensureLoopbackIP(); err != nil {
-			if reserved {
-				m.mu.Lock()
-				if m.running > 0 {
-					m.running--
-				}
-				m.mu.Unlock()
-			}
-			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
-			return
-		}
 		runtimeEnv = applyLLdapRuntimeCompatEnv(runtimeEnv, c.LoopbackIP)
 		runtimeTargets[3890] = c.LoopbackIP + ":3890"
 		runtimeTargets[17170] = c.LoopbackIP + ":17170"
 	}
 	if isNginxImage(c.Image) {
-		if err := ensureLoopbackIP(); err != nil {
-			if reserved {
-				m.mu.Lock()
-				if m.running > 0 {
-					m.running--
-				}
-				m.mu.Unlock()
-			}
-			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
-			return
-		}
 		if err := writeNginxCompatConfig(c.Rootfs, 8080); err != nil {
 			if reserved {
 				m.mu.Lock()
@@ -613,20 +591,8 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		runtimeTargets[80] = c.LoopbackIP + ":8080"
 	}
 	if isSSHDImage(c.Image) {
-		if err := ensureLoopbackIP(); err != nil {
-			if reserved {
-				m.mu.Lock()
-				if m.running > 0 {
-					m.running--
-				}
-				m.mu.Unlock()
-			}
-			writeError(w, http.StatusInternalServerError, "start failed: "+err.Error())
-			return
-		}
-		const sshdCompatPort = 2222
-		cmdArgs = applySSHDRuntimeCompat(cmdArgs, c.LoopbackIP, sshdCompatPort)
-		runtimeTargets[22] = fmt.Sprintf("%s:%d", c.LoopbackIP, sshdCompatPort)
+		// Keep upstream sshd command behavior to avoid process lifecycle
+		// differences across base images.
 	}
 
 	socketBinds, err := dockerSocketBindsForContainer(c, unixSocketPathFromContainerEnv(c.Env))
@@ -652,7 +618,13 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		writeError(w, http.StatusInternalServerError, "start failed: tmp permission fix failed")
 		return
 	}
-	if err := writeContainerIdentityFilesWithAliasesAndHosts(c.Rootfs, c.Hostname, store.peerAliasesForContainer(c.ID), c.ExtraHosts); err != nil {
+	hostAliasMap := store.peerHostAliasesForContainer(c.ID)
+	for host, ip := range store.selfHostAliasesForContainer(c.ID) {
+		if _, exists := hostAliasMap[host]; !exists {
+			hostAliasMap[host] = ip
+		}
+	}
+	if err := writeContainerIdentityFilesWithHostAliasesAndHosts(c.Rootfs, c.Hostname, hostAliasMap, c.ExtraHosts); err != nil {
 		if reserved {
 			m.mu.Lock()
 			if m.running > 0 {
@@ -767,6 +739,26 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		return
 	}
 	store.setProxies(c.ID, proxies)
+	if isZookeeperImage(c.Image) {
+		target := strings.TrimSpace(runtimeTargets[2181])
+		if target == "" {
+			target = "127.0.0.1:2181"
+		}
+		if err := waitForStablePortTargets(r.Context(), map[int]string{2181: target}, 90*time.Second, 2); err != nil {
+			_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+			store.stopProxies(c.ID)
+			closeLogs()
+			if reserved {
+				m.mu.Lock()
+				if m.running > 0 {
+					m.running--
+				}
+				m.mu.Unlock()
+			}
+			writeError(w, http.StatusInternalServerError, "port readiness failed: "+err.Error())
+			return
+		}
+	}
 
 	c.Running = true
 	c.Pid = cmd.Process.Pid

@@ -353,20 +353,34 @@ func closeWrite(conn net.Conn) error {
 
 func dialContainerPort(containerPort int, target string) (net.Conn, error) {
 	if strings.TrimSpace(target) != "" {
-		return net.DialTimeout("tcp", target, 2*time.Second)
+		return dialAnyWithRetry([]string{target}, 5*time.Second)
 	}
 	port := strconv.Itoa(containerPort)
 	endpoints := []string{
 		"127.0.0.1:" + port,
 		"[::1]:" + port,
 	}
+	return dialAnyWithRetry(endpoints, 5*time.Second)
+}
+
+func dialAnyWithRetry(endpoints []string, timeout time.Duration) (net.Conn, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for _, ep := range endpoints {
-		conn, err := net.DialTimeout("tcp", ep, 2*time.Second)
-		if err == nil {
-			return conn, nil
+	for {
+		for _, ep := range endpoints {
+			conn, err := net.DialTimeout("tcp", ep, 750*time.Millisecond)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
 		}
-		lastErr = err
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no endpoint candidates")

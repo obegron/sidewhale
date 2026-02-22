@@ -4,6 +4,9 @@ import "testing"
 
 func TestSelfHostAliasesForContainer(t *testing.T) {
 	store := &containerStore{
+		containers: map[string]*Container{
+			"abc123": {LoopbackIP: "127.0.0.9"},
+		},
 		networks: map[string]*Network{
 			"bridge": {
 				ID:   "bridge",
@@ -22,10 +25,10 @@ func TestSelfHostAliasesForContainer(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2 (%v)", len(got), got)
 	}
-	if got["kafka"] != "127.0.0.1" {
-		t.Fatalf("kafka ip = %q, want 127.0.0.1", got["kafka"])
+	if got["kafka"] != "127.0.0.9" {
+		t.Fatalf("kafka ip = %q, want 127.0.0.9", got["kafka"])
 	}
-	if got["kafka-upstream-shape-it"] != "127.0.0.1" {
-		t.Fatalf("name ip = %q, want 127.0.0.1", got["kafka-upstream-shape-it"])
+	if got["kafka-upstream-shape-it"] != "127.0.0.9" {
+		t.Fatalf("name ip = %q, want 127.0.0.9", got["kafka-upstream-shape-it"])
 	}
 }
