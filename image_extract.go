@@ -254,36 +254,35 @@ func normalizeLayerPath(name string) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
-	// "Zip Slip" remediation: Explicitly reject any path containing ".." components.
-	// While path.Clean handles this lexically, CodeQL and strict security practices
-	// prefer explicit rejection of malicious patterns in archive paths.
-	if strings.Contains(raw, "..") {
-		parts := strings.Split(raw, "/")
-		for _, part := range parts {
-			if part == ".." {
-				return "", false
-			}
-		}
-		// Also check backslash for Windows-style paths if they sneak in
-		if strings.Contains(raw, "\\") {
-			partsBack := strings.Split(raw, "\\")
-			for _, part := range partsBack {
-				if part == ".." {
-					return "", false
-				}
-			}
-		}
+	// Reject Windows-style separators outright; tar paths should use forward slashes.
+	if strings.Contains(raw, "\\") {
+		return "", false
 	}
 
+	// First, normalize and reject any path that attempts to traverse upwards.
 	cleanRaw := path.Clean(raw)
 	if cleanRaw == "." || cleanRaw == ".." || strings.HasPrefix(cleanRaw, "../") {
 		return "", false
 	}
+
+	// Ensure we have a canonical absolute-then-relative form rooted at "/".
 	clean := path.Clean("/" + raw)
 	rel := strings.TrimPrefix(clean, "/")
 	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", false
 	}
+
+	// Ensure the normalized path is a single path component, so when callers
+	// treat it as a "top-level" entry they don't accidentally accept nested
+	// directory structures derived from user-controlled data.
+	if strings.Contains(rel, "/") {
+		return "", false
+	}
+	// Also guard against OS-specific separators differing from "/".
+	if sep := string(os.PathSeparator); sep != "/" && strings.Contains(rel, sep) {
+		return "", false
+	}
+
 	return rel, true
 }
 
