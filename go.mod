@@ -3,7 +3,7 @@ module sidewhale
 go 1.26
 
 require (
-	github.com/google/go-containerregistry v0.21.0
+	github.com/google/go-containerregistry v0.21.1
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
