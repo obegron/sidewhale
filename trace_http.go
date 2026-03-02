@@ -40,24 +40,12 @@ func (c *countingReadCloser) Close() error {
 
 type traceResponseWriter struct {
 	http.ResponseWriter
-	status      int
-	bytesWritten int64
+	status int
 }
 
 func (w *traceResponseWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *traceResponseWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	n, err := w.ResponseWriter.Write(b)
-	if n > 0 {
-		w.bytesWritten += int64(n)
-	}
-	return n, err
 }
 
 func traceHTTPMiddleware(next http.Handler) http.Handler {
@@ -84,9 +72,15 @@ func traceHTTPMiddleware(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
+		outBytes := int64(0)
+		if clOut := strings.TrimSpace(tw.Header().Get("Content-Length")); clOut != "" {
+			if parsed, err := strconv.ParseInt(clOut, 10, 64); err == nil && parsed > 0 {
+				outBytes = parsed
+			}
+		}
 		fmt.Printf(
 			"sidewhale: trace req id=%d event=end method=%s path=%s status=%d in_bytes=%d out_bytes=%d duration_ms=%d ctx_err=%q\n",
-			id, r.Method, r.URL.Path, status, body.count, tw.bytesWritten, time.Since(start).Milliseconds(), errString(r.Context().Err()),
+			id, r.Method, r.URL.Path, status, body.count, outBytes, time.Since(start).Milliseconds(), errString(r.Context().Err()),
 		)
 	})
 }
@@ -97,4 +91,3 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
-

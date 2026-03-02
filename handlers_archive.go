@@ -268,7 +268,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, targetDirHint
 	}
 	touched := []string{}
 	addTouched := func(srcPath, dstPath string) error {
-		paths, err := collectSyncTargets(srcPath, dstPath)
+		paths, err := collectSyncTargets(tmpDir, srcPath, dstPath)
 		if err != nil {
 			return err
 		}
@@ -388,8 +388,19 @@ func copyArchiveFSNode(srcBase, src, targetBase, targetPath string) error {
 	return copyFSNode(srcBase, src, dstBase, targetPath)
 }
 
-func collectSyncTargets(srcPath, dstPath string) ([]string, error) {
-	info, err := os.Lstat(srcPath)
+func collectSyncTargets(srcBase, srcPath, dstPath string) ([]string, error) {
+	if err := ensurePathUnderBase(srcBase, srcPath); err != nil {
+		return nil, err
+	}
+	relSrcPath, err := filepath.Rel(srcBase, srcPath)
+	if err != nil || relSrcPath == ".." || strings.HasPrefix(relSrcPath, ".."+string(filepath.Separator)) || filepath.IsAbs(relSrcPath) {
+		return nil, fmt.Errorf("source path escapes base")
+	}
+	safeSrcPath, err := resolvePathUnder(srcBase, filepath.ToSlash(relSrcPath))
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(safeSrcPath)
 	if err != nil {
 		return nil, err
 	}
@@ -397,14 +408,17 @@ func collectSyncTargets(srcPath, dstPath string) ([]string, error) {
 		return []string{filepath.ToSlash(dstPath)}, nil
 	}
 	out := []string{}
-	err = filepath.WalkDir(srcPath, func(p string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(safeSrcPath, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ensurePathUnderBase(srcBase, p); err != nil {
+			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(srcPath, p)
+		rel, err := filepath.Rel(safeSrcPath, p)
 		if err != nil {
 			return err
 		}
@@ -900,7 +914,11 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 				return nil, err
 			}
 		case tar.TypeSymlink:
-			if ok, err := isSafeLinkTarget(h.Linkname, safeTarget, dst); !ok {
+			linkname := filepath.Clean(filepath.FromSlash(strings.TrimSpace(h.Linkname)))
+			if linkname == "" || linkname == "." || linkname == ".." || filepath.IsAbs(linkname) || strings.HasPrefix(linkname, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if ok, err := isSafeLinkTarget(linkname, safeTarget, dst); !ok {
 				// Consider logging the error for debugging: log.Printf("Skipping unsafe symlink target: %v", err)
 				_ = err // Mark err as used to suppress compiler warning
 				continue
@@ -928,7 +946,7 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relTarget) {
 				continue
 			}
-			if err := os.Symlink(h.Linkname, absTarget); err != nil {
+			if err := os.Symlink(linkname, absTarget); err != nil {
 				return nil, err
 			}
 		case tar.TypeLink:
