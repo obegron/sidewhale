@@ -946,7 +946,19 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 			if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relTarget) {
 				continue
 			}
-			if err := os.Symlink(linkname, absTarget); err != nil {
+			// Resolve and re-check the symlink target path relative to the symlink location,
+			// then create the link using only the re-derived safe relative path.
+			targetDir := filepath.Dir(absTarget)
+			resolvedTarget := filepath.Clean(filepath.Join(targetDir, linkname))
+			relResolved, err := filepath.Rel(absDst, resolvedTarget)
+			if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) || filepath.IsAbs(relResolved) {
+				continue
+			}
+			safeRelTarget, err := filepath.Rel(targetDir, resolvedTarget)
+			if err != nil || safeRelTarget == ".." || strings.HasPrefix(safeRelTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(safeRelTarget) {
+				continue
+			}
+			if err := os.Symlink(safeRelTarget, absTarget); err != nil {
 				return nil, err
 			}
 		case tar.TypeLink:
