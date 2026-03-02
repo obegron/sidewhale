@@ -268,7 +268,7 @@ func extractArchiveToPath(r io.Reader, targetPath, tmpBase string, targetDirHint
 	}
 	touched := []string{}
 	addTouched := func(srcPath, dstPath string) error {
-		paths, err := collectSyncTargets(srcPath, dstPath)
+		paths, err := collectSyncTargets(tmpDir, srcPath, dstPath)
 		if err != nil {
 			return err
 		}
@@ -388,7 +388,10 @@ func copyArchiveFSNode(srcBase, src, targetBase, targetPath string) error {
 	return copyFSNode(srcBase, src, dstBase, targetPath)
 }
 
-func collectSyncTargets(srcPath, dstPath string) ([]string, error) {
+func collectSyncTargets(srcBase, srcPath, dstPath string) ([]string, error) {
+	if err := ensurePathUnderBase(srcBase, srcPath); err != nil {
+		return nil, err
+	}
 	info, err := os.Lstat(srcPath)
 	if err != nil {
 		return nil, err
@@ -400,6 +403,9 @@ func collectSyncTargets(srcPath, dstPath string) ([]string, error) {
 	err = filepath.WalkDir(srcPath, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ensurePathUnderBase(srcBase, p); err != nil {
+			return err
 		}
 		if d.IsDir() {
 			return nil
