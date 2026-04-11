@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/google/go-containerregistry v0.21.3
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/crypto v0.49.0
+	golang.org/x/crypto v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -21,6 +21,6 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
